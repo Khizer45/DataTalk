@@ -1,12 +1,5 @@
-import json
+"""Demo mode: answers a few question types without an AI model, and declines everything else."""
 import re
-from urllib.request import Request, urlopen
-
-from sqlalchemy import func, inspect, select, table
-
-from .config import settings
-from .database import get_engine
-from .limits import DailyQuota
 
 
 SAMPLE_QUESTIONS = [
@@ -26,36 +19,6 @@ _UNSUPPORTED_QUALIFIERS = re.compile(
 
 class UnsupportedQuestionError(ValueError):
     pass
-
-
-class LLMError(RuntimeError):
-    pass
-
-
-_llm_quota = DailyQuota(settings.llm_daily_limit)
-
-
-def llm_enabled() -> bool:
-    return bool(settings.llm_api_key and settings.llm_model)
-
-
-def get_schema_context() -> tuple[list[dict], str]:
-    inspector = inspect(get_engine())
-    existing = set(inspector.get_table_names())
-    tables = []
-    for name in settings.exposed_tables:
-        if name not in existing:
-            continue
-        columns = [{"name": c["name"], "type": str(c["type"])} for c in inspector.get_columns(name)]
-        tables.append({"name": name, "columns": columns})
-    context = "\n".join(f"{t['name']}({', '.join(c['name'] for c in t['columns'])})" for t in tables)
-    return tables, context
-
-
-def get_table_row_counts(table_names: list[str]) -> dict[str, int]:
-    with get_engine().connect() as connection:
-        return {name: connection.execute(select(func.count()).select_from(table(name))).scalar_one()
-                for name in table_names}
 
 
 def _limit(match: re.Match, default: int) -> int:
@@ -124,7 +87,8 @@ def _normalize(question: str) -> str:
     return q.rstrip("?.! ")
 
 
-def _fallback_sql(question: str) -> tuple[str, str]:
+def rule_based_sql(question: str) -> tuple[str, str]:
+    """Return (sql, explanation) for a recognised question, or raise UnsupportedQuestionError."""
     q = _normalize(question)
     if _UNSUPPORTED_QUALIFIERS.search(q):
         raise UnsupportedQuestionError(
@@ -139,45 +103,3 @@ def _fallback_sql(question: str) -> tuple[str, str]:
         "Demo mode only answers a few question types, phrased like the suggested questions, so it never guesses. "
         "Try one of the suggestions, or configure an LLM for open-ended questions."
     )
-
-
-def generate_sql(question: str, schema_context: str) -> tuple[str, str, str]:
-    """Return (sql, generator, explanation). Uses the LLM while today's quota lasts, otherwise the demo rules."""
-    if llm_enabled():
-        if _llm_quota.try_consume():
-            return _llm_sql(question, schema_context)
-        try:
-            sql, explanation = _fallback_sql(question)
-        except UnsupportedQuestionError as exc:
-            raise UnsupportedQuestionError(
-                "This demo has reached today's limit for AI-generated answers. The suggested questions "
-                "still work in demo mode; open-ended questions will work again tomorrow."
-            ) from exc
-        return sql, "rules", explanation
-    sql, explanation = _fallback_sql(question)
-    return sql, "rules", explanation
-
-
-def _llm_sql(question: str, schema_context: str) -> tuple[str, str, str]:
-    prompt = (
-        "Convert the user's question into exactly one PostgreSQL SELECT query. "
-        "Use only the tables and columns in the schema below. Never write or modify data. "
-        "Return SQL only, without markdown. Keep output to at most 200 rows.\n\n"
-        f"Schema:\n{schema_context}\n\nQuestion: {question}"
-    )
-    body = json.dumps({"model": settings.llm_model, "messages": [
-        {"role": "system", "content": "You write safe, schema-grounded, read-only PostgreSQL queries."},
-        {"role": "user", "content": prompt},
-    ], "temperature": 0}).encode()
-    request = Request(f"{settings.llm_base_url}/chat/completions", data=body, headers={
-        "Authorization": f"Bearer {settings.llm_api_key}", "Content-Type": "application/json",
-    }, method="POST")
-    try:
-        with urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read())
-        content = payload["choices"][0]["message"]["content"].strip()
-        content = re.sub(r"^```(?:sql)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
-        return content, "llm", "Generated from the live database schema."
-    except Exception as exc:
-        raise LLMError("The configured LLM could not generate a query. Check the endpoint, model, and API key.") from exc
-

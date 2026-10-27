@@ -5,7 +5,11 @@ from sqlglot import exp
 
 
 class UnsafeQueryError(ValueError):
-    pass
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        # False when the SQL tries to change data: asking the model again could turn a request to delete
+        # or update into an unrelated SELECT that looks like an answer.
+        self.retryable = retryable
 
 
 # Function nodes as sqlglot parses them for PostgreSQL. Anything not listed is rejected, which keeps
@@ -97,9 +101,9 @@ def validate_read_query(sql: str, allowed_tables: Iterable[str], row_limit: int)
         raise UnsafeQueryError("Only one SQL statement is allowed.")
     tree = statements[0]
     if not isinstance(tree, exp.Query) or isinstance(tree, (exp.Insert, exp.Update, exp.Delete, exp.Merge)):
-        raise UnsafeQueryError("Only read-only SELECT queries are allowed.")
+        raise UnsafeQueryError("Only read-only SELECT queries are allowed.", retryable=False)
     if any(tree.find(kind) for kind in (exp.DDL, exp.DML, exp.Into, exp.Lock)):
-        raise UnsafeQueryError("The query contains a write or locking operation.")
+        raise UnsafeQueryError("The query contains a write or locking operation.", retryable=False)
 
     _check_functions(tree)
     _check_tables(tree, allowed_tables)

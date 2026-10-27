@@ -1,3 +1,5 @@
+import threading
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase
@@ -11,6 +13,13 @@ class Base(DeclarativeBase):
 
 class UnsafeDatabaseRoleError(RuntimeError):
     pass
+
+
+class DatabaseBusyError(RuntimeError):
+    pass
+
+
+_query_slots = threading.BoundedSemaphore(settings.max_concurrent_queries)
 
 
 def _require_postgres(url: str, name: str) -> str:
@@ -39,11 +48,16 @@ def create_admin_engine() -> Engine:
 
 def execute_read_query(sql: str) -> list[dict]:
     """Run validated SQL in a read-only, time-limited transaction that is always rolled back."""
-    with get_engine().connect() as connection:
-        connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-        connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(settings.statement_timeout_ms)}")
-        result = connection.execute(text(sql))
-        return [dict(row) for row in result.mappings().all()]
+    if not _query_slots.acquire(timeout=2):
+        raise DatabaseBusyError("DataTalk is busy right now. Please try again in a moment.")
+    try:
+        with get_engine().connect() as connection:
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+            connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(settings.statement_timeout_ms)}")
+            result = connection.execute(text(sql))
+            return [dict(row) for row in result.mappings().all()]
+    finally:
+        _query_slots.release()
 
 
 def verify_query_role(engine: Engine) -> None:
