@@ -14,11 +14,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from .config import settings
 from .database import execute_read_query, get_engine, verify_query_role
 from .errors import describe_database_error
-from .evaluation import run_evaluation
-from .generator import SAMPLE_QUESTIONS, LLMError, UnsupportedQuestionError, generate_sql, get_schema_context
+from .generator import (SAMPLE_QUESTIONS, LLMError, UnsupportedQuestionError, generate_sql, get_schema_context,
+                        get_table_row_counts, llm_enabled)
 from .limits import RateLimiter
 from .safety import UnsafeQueryError, validate_read_query
 from .schemas import QueryRequest
+from .seed import DATASET_INFO
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("datatalk")
@@ -78,7 +79,11 @@ def health():
 @app.get("/api/schema")
 def schema():
     tables, _ = get_schema_context()
-    return {"tables": tables, "sample_questions": SAMPLE_QUESTIONS}
+    counts = get_table_row_counts([table["name"] for table in tables])
+    for table in tables:
+        table["row_count"] = counts[table["name"]]
+    return {"tables": tables, "sample_questions": SAMPLE_QUESTIONS, "dataset": DATASET_INFO,
+            "mode": "ai" if llm_enabled() else "demo"}
 
 
 @app.post("/api/query")
@@ -118,12 +123,3 @@ def query(payload: QueryRequest, request: Request):
     logger.info("query ok request_id=%s generator=%s rows=%d", request_id, generator, len(rows))
     return {"question": payload.question, "sql": sql, "rows": rows, "row_count": len(rows),
             "truncated": len(raw_rows) > limit, "generator": generator, "explanation": explanation}
-
-
-@app.post("/api/evaluations/run")
-def evaluations():
-    # Each run makes one LLM call per case, so it is off unless explicitly enabled. Prefer the CLI:
-    # `python -m app.evaluation`.
-    if not settings.enable_eval_endpoint:
-        raise HTTPException(status_code=404, detail="Not found")
-    return run_evaluation(settings.max_result_rows)

@@ -20,6 +20,8 @@ services:
         sync: false
       - key: LLM_MODEL
         sync: false
+      - key: LLM_DAILY_LIMIT      # also set a spending limit with the LLM provider
+        value: "200"
       - key: RATE_LIMIT_PER_MINUTE
         value: "20"
       - key: MAX_CONCURRENT_QUERIES

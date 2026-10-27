@@ -18,10 +18,10 @@ ALLOWED_FUNCTIONS = {
     # math
     "Abs", "Ceil", "Floor", "Round", "Sqrt", "Pow", "Ln", "Log", "Exp", "Sign",
     # date and time
-    "TimestampTrunc", "DateTrunc", "Extract", "TimeToStr", "StrToTime", "StrToDate", "CurrentDate",
+    "TimestampTrunc", "DateTrunc", "Extract", "TimeToStr", "StrToTime", "StrToDate", "Date", "CurrentDate",
     "CurrentTimestamp", "CurrentTime", "DateAdd", "DateSub", "DateDiff", "TsOrDsToDate",
-    # conditionals and casts
-    "Case", "If", "Coalesce", "Nullif", "Greatest", "Least", "Cast", "TryCast",
+    # conditionals, casts and subquery tests
+    "Case", "If", "Coalesce", "Nullif", "Greatest", "Least", "Cast", "TryCast", "Exists",
     # strings
     "Lower", "Upper", "Trim", "Length", "Concat", "ConcatWs", "Substring", "Replace", "Initcap", "Left",
     "Right", "Pad", "StrPosition", "SplitPart",
