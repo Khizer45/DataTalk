@@ -1,112 +1,71 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { api } from './api.js'
+import DatasetView from './components/DatasetView.jsx'
+import Icon from './components/Icon.jsx'
+import Results from './components/Results.jsx'
+import { formatCount } from './format.js'
 
+const REPO_URL = 'https://github.com/Khizer45/DataTalk'
 const prompts = [
   { icon: '↗', text: 'What was total revenue by month?', tag: 'Revenue' },
   { icon: '▤', text: 'Show the top 5 products by revenue', tag: 'Products' },
   { icon: '◷', text: 'How many orders are pending?', tag: 'Orders' },
   { icon: '◎', text: 'Show revenue by customer country', tag: 'Customers' },
 ]
+const views = [{ id: 'ask', label: 'Ask data', icon: 'grid' }, { id: 'dataset', label: 'Dataset', icon: 'database' }]
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
-function Icon({ name, size = 18 }) {
-  const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }
-  const paths = {
-    grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.4"/></>,
-    chart: <><path d="M4 19V5M4 19h17"/><path d="m7 15 4-4 3 2 6-7"/></>,
-    database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3 2.1 0 4-.3 5.6-.9"/></>,
-    clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
-    arrow: <><path d="M5 12h14m-6-6 6 6-6 6"/></>,
-    spark: <><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 15 .9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z"/></>,
-    play: <><path d="m8 5 11 7-11 7V5Z"/></>,
-    check: <path d="m5 12 4 4L19 6"/>,
-  }
-  return <svg {...common}>{paths[name] || paths.grid}</svg>
+// 'checking' → first health check running; 'waking' → it is slow (free hosting sleeps); 'ok' / 'down'.
+function useServerHealth() {
+  const [health, setHealth] = useState('checking')
+  useEffect(() => {
+    let timer
+    let stopped = false
+    async function check() {
+      const slow = window.setTimeout(() => !stopped && setHealth(current => (current === 'ok' ? current : 'waking')), 3000)
+      let ok = false
+      try { await api('/api/health'); ok = true } catch { /* asleep or unreachable; retried below */ }
+      window.clearTimeout(slow)
+      if (stopped) return
+      setHealth(ok ? 'ok' : 'down')
+      timer = window.setTimeout(check, ok ? 60000 : 5000)
+    }
+    check()
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [])
+  return health
 }
 
-// Empty in local dev (Vite proxies /api); set VITE_API_BASE_URL to the API's URL when the frontend is hosted separately.
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-
-function errorMessage(data, status) {
-  const detail = data?.detail
-  if (typeof detail === 'string') return detail
-  if (Array.isArray(detail)) {
-    if (detail.some(item => item?.loc?.includes('question'))) return 'Please enter a question of at least 3 characters.'
-    return 'The request was not valid. Please check your question and try again.'
+function ServerNotice({ health }) {
+  if (health === 'waking') {
+    return <div className="notice info-notice" role="status"><span>i</span>Waking up the demo server. Free hosting puts it to sleep when nobody is using it, so the first visit can take up to a minute. This page updates by itself.</div>
   }
-  if (status === 429) return 'Too many questions in a short time. Please wait a minute.'
-  if (status >= 500) return 'DataTalk is unavailable right now. Please try again shortly.'
-  return 'Something went wrong. Please try again.'
-}
-
-async function api(path, options) {
-  let response
-  try {
-    response = await fetch(`${API_BASE}${path}`, options)
-  } catch {
-    throw new Error('Could not reach the DataTalk API. Check your connection and try again.')
+  if (health === 'down') {
+    return <div className="notice error-notice" role="status"><span>!</span>Can't reach the DataTalk server right now. Retrying automatically…</div>
   }
-  const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(errorMessage(data, response.status))
-  if (data === null) throw new Error('The API returned an unexpected response.')
-  return data
-}
-
-function formatValue(value, key = '') {
-  if (typeof value === 'number') {
-    const currency = /revenue|amount|price|sales/i.test(key)
-    return currency ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value) : new Intl.NumberFormat('en-US').format(value)
-  }
-  return String(value ?? '—')
-}
-
-function Results({ result }) {
-  const chartData = useMemo(() => {
-    if (!result?.rows?.length) return null
-    const columns = Object.keys(result.rows[0])
-    const labelKey = columns.find(k => typeof result.rows[0][k] === 'string') || columns[0]
-    const valueKey = columns.find(k => typeof result.rows[0][k] === 'number' && k !== labelKey)
-    if (!valueKey) return null
-    const max = Math.max(...result.rows.map(row => Number(row[valueKey]) || 0), 1)
-    return { labelKey, valueKey, max, rows: result.rows.slice(0, 6) }
-  }, [result])
-  if (!result) return null
-  return <section className="result-card">
-    <div className="result-heading">
-      <div><span className="eyebrow">QUERY RESULTS</span><h2>{result.row_count} {result.row_count === 1 ? 'row' : 'rows'} returned</h2></div>
-      <div className="result-meta"><span className="live-dot" />{result.generator === 'llm' ? 'AI generated' : 'Rule based'}<span className="meta-divider"/>Read only</div>
-    </div>
-    <p className="explanation">{result.explanation}</p>
-    <details className="sql-panel"><summary><span><span className="sql-mark">SQL</span> View generated query</span><span className="chevron">⌄</span></summary><pre><code>{result.sql}</code></pre></details>
-    {chartData && <div className="chart-block"><div className="chart-title"><div><span className="eyebrow">VISUAL BREAKDOWN</span><h3>{chartData.valueKey.replaceAll('_', ' ')}</h3></div><span className="chart-unit">{chartData.rows.length} categories</span></div>
-      <div className="bars">{chartData.rows.map((row, index) => <div className="bar-row" key={`${row[chartData.labelKey]}-${index}`}>
-        <span className="bar-label" title={row[chartData.labelKey]}>{row[chartData.labelKey]}</span><div className="bar-track"><div className={`bar-fill tone-${index % 4}`} style={{ width: `${Math.max(3, (Number(row[chartData.valueKey]) / chartData.max) * 100)}%` }} /></div><span className="bar-value">{formatValue(row[chartData.valueKey], chartData.valueKey)}</span>
-      </div>)}</div>
-    </div>}
-    <div className="table-wrap"><table><thead><tr>{Object.keys(result.rows[0] || {}).map(key => <th key={key}>{key.replaceAll('_', ' ')}</th>)}</tr></thead><tbody>{result.rows.map((row, i) => <tr key={i}>{Object.entries(row).map(([key, value]) => <td key={key}>{formatValue(value, key)}</td>)}</tr>)}</tbody></table>{result.truncated && <div className="table-foot">Showing up to the selected row limit.</div>}</div>
-  </section>
+  return null
 }
 
 function App() {
   const [question, setQuestion] = useState('')
   const [result, setResult] = useState(null)
-  const [schema, setSchema] = useState([])
-  const [health, setHealth] = useState(false)
+  const [schemaInfo, setSchemaInfo] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [evaluation, setEvaluation] = useState(null)
-  const [evaluating, setEvaluating] = useState(false)
-  const [activeNav, setActiveNav] = useState('Ask data')
+  const [view, setView] = useState('ask')
+  const health = useServerHealth()
 
   useEffect(() => {
-    api('/api/schema').then(data => setSchema(data.tables || [])).catch(() => {})
-    const checkHealth = () => api('/api/health').then(() => setHealth(true)).catch(() => setHealth(false))
-    checkHealth()
-    const timer = window.setInterval(checkHealth, 5000)
-    return () => window.clearInterval(timer)
-  }, [])
+    if (health !== 'ok' || schemaInfo) return
+    api('/api/schema').then(setSchemaInfo).catch(() => {})
+  }, [health, schemaInfo])
+
+  const counts = Object.fromEntries((schemaInfo?.tables || []).map(table => [table.name, table.row_count]))
+  const viewLabel = views.find(item => item.id === view).label
 
   async function ask(value = question) {
     if (!value.trim()) return
-    setQuestion(value); setLoading(true); setError(''); setEvaluation(null)
+    setView('ask'); setQuestion(value); setLoading(true); setError('')
     try {
       const data = await api('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: value, max_rows: 100 }) })
       setResult(data)
@@ -114,39 +73,61 @@ function App() {
     finally { setLoading(false) }
   }
 
-  async function runEvaluation() {
-    setEvaluating(true); setError('')
-    try { setEvaluation(await api('/api/evaluations/run', { method: 'POST' })) }
-    catch (err) { setError(err.message) }
-    finally { setEvaluating(false) }
-  }
-
   return <div className="app-shell">
     <aside className="sidebar">
-      <a className="brand" href="#top" onClick={() => setActiveNav('Ask data')}><span className="brand-mark"><Icon name="spark" size={20}/></span><span>data<span className="brand-accent">talk</span><small>ANALYTICS, IN PLAIN ENGLISH</small></span></a>
+      <a className="brand" href="#top" onClick={() => setView('ask')}><span className="brand-mark"><Icon name="spark" size={20}/></span><span>data<span className="brand-accent">talk</span><small>ANALYTICS, IN PLAIN ENGLISH</small></span></a>
       <div className="workspace-label">WORKSPACE</div>
-      <nav className="side-nav">
-        {[['Ask data', 'grid'], ['Saved analyses', 'clock'], ['Data sources', 'database']].map(([label, icon]) => <button key={label} className={`nav-item ${activeNav === label ? 'selected' : ''}`} onClick={() => { setActiveNav(label); if (label === 'Saved analyses') setError('Your recent analysis will appear here after you run a query.'); if (label === 'Data sources') setError('Connected demo database · PostgreSQL ready') }}><Icon name={icon}/>{label}{label === 'Data sources' && <span className={`nav-status ${health ? 'online' : ''}`}/>}</button>)}
+      <nav className="side-nav" aria-label="Main">
+        {views.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'selected' : ''}`} aria-current={view === item.id ? 'page' : undefined} aria-label={item.label} title={item.label} onClick={() => setView(item.id)}>
+          <Icon name={item.icon}/>{item.label}{item.id === 'dataset' && <span className={`nav-status ${health === 'ok' ? 'online' : ''}`}/>}
+        </button>)}
       </nav>
       <div className="side-section-head"><span>TRY A QUESTION</span><span className="spark-mini">✳</span></div>
-      <div className="prompt-list">{prompts.map((item, i) => <button className="prompt-link" key={item.text} onClick={() => { setActiveNav('Ask data'); ask(item.text) }}><span className={`prompt-symbol ps-${i}`}>{item.icon}</span><span>{item.text}</span></button>)}</div>
-      <div className="sidebar-bottom"><div className="connection-card"><span className={`connection-dot ${health ? 'online' : ''}`}/><div><strong>{health ? 'Database connected' : 'Connecting…'}</strong><span>{health ? `${schema.length} tables · demo workspace` : 'Checking connection'}</span></div><Icon name="arrow" size={15}/></div><div className="user-profile"><div className="avatar">DT</div><div><strong>DataTalk workspace</strong><span>Free plan</span></div><span className="more">···</span></div></div>
+      <div className="prompt-list">{prompts.map((item, i) => <button className="prompt-link" key={item.text} onClick={() => ask(item.text)}><span className={`prompt-symbol ps-${i}`}>{item.icon}</span><span>{item.text}</span></button>)}</div>
+      <div className="sidebar-bottom">
+        <button className="connection-card" onClick={() => setView('dataset')}>
+          <span className={`connection-dot ${health === 'ok' ? 'online' : ''}`}/>
+          <div><strong>{health === 'ok' ? 'Demo dataset connected' : health === 'waking' ? 'Waking up the server…' : 'Connecting…'}</strong><span>{schemaInfo ? `${schemaInfo.tables.length} tables · synthetic data` : 'Read-only access'}</span></div>
+          <Icon name="arrow" size={15}/>
+        </button>
+      </div>
     </aside>
     <main className="main-content" id="top">
-      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{activeNav}</strong></div><div className="top-actions"><span className="safe-pill"><span className="safe-icon"><Icon name="check" size={12}/></span>Read-only mode</span><button className="avatar small-avatar" title="Workspace profile">DT</button></div></header>
+      <header className="topbar">
+        <div className="breadcrumbs"><span>DataTalk</span><span className="crumb-slash">/</span><strong>{viewLabel}</strong></div>
+        <div className="top-actions"><span className="safe-pill"><span className="safe-icon"><Icon name="check" size={12}/></span>Read-only mode</span></div>
+      </header>
       <div className="page-content">
-        <section className="welcome"><div className="welcome-copy"><div className="welcome-kicker"><span className="kicker-line"/> YOUR DATA, AT YOUR FINGERTIPS</div><h1>Good morning.<br/><span>What would you like to know?</span></h1><p>Ask a question in plain English. DataTalk will query your data and bring back the answer.</p></div><div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><Icon name="spark" size={30}/></div><div className="art-chip chip-a">SQL <span>✓</span></div><div className="art-chip chip-b">↗ <span>Insights</span></div><div className="art-chip chip-c">✳ <span>AI</span></div></div></section>
-        <section className="ask-card"><div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">⌘ ↵</span></div><form onSubmit={event => { event.preventDefault(); ask() }}><textarea value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder="e.g. Show revenue by customer country" rows="2"/><div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div></form></section>
-        <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Explore your data</h2></div><span className="suggestion-caption">A few questions to get you started</span></div>
-        <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => ask(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
-        {error && <div className="notice error-notice"><span>!</span>{error}<button onClick={() => setError('')}>×</button></div>}
-        {result && <Results result={result}/>}
-        {evaluation && <section className="evaluation-card"><div className="eval-header"><div><span className="eyebrow">QUALITY CHECK</span><h2>Evaluation results</h2></div><span className="eval-count">{evaluation.total_cases} benchmark questions</span></div><div className="metric-grid">{[['SQL correctness', evaluation.sql_correctness], ['Execution success', evaluation.execution_success], ['Response accuracy', evaluation.response_accuracy]].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{Math.round(value * 100)}<small>%</small></strong><div className="metric-track"><div style={{ width: `${value * 100}%` }}/></div></div>)}</div><div className="eval-list">{evaluation.results.map((item, i) => <div className="eval-row" key={i}><span className={`eval-check ${item.execution_success && item.sql_correct ? 'pass' : 'fail'}`}>{item.execution_success && item.sql_correct ? '✓' : '!'}</span><span className="eval-question">{item.question}</span><span className="eval-status">{item.execution_success ? (item.sql_correct ? 'Passed' : 'Result differs') : 'Failed'}</span></div>)}</div></section>}
-        <footer className="page-footer"><span>Built for curious minds <span className="footer-spark">✳</span></span><button onClick={runEvaluation} disabled={evaluating}>{evaluating ? <><span className="spinner dark-spinner"/> Running benchmark</> : <><Icon name="play" size={14}/> Run evaluation suite</>}</button></footer>
+        <ServerNotice health={health}/>
+        {view === 'dataset' ? <DatasetView schemaInfo={schemaInfo} health={health}/> : <>
+          <section className="welcome">
+            <div className="welcome-copy">
+              <div className="welcome-kicker"><span className="kicker-line"/> AI DATABASE ANALYST · DEMO</div>
+              <h1>Ask questions about data<br/><span>in plain English.</span></h1>
+              <p>{schemaInfo
+                ? `This demo uses a synthetic online-shop dataset: ${formatCount(counts.customers ?? 0)} customers and ${formatCount(counts.orders ?? 0)} orders from 2024–2025. DataTalk writes the SQL, checks it, and runs it read-only.`
+                : 'DataTalk writes the SQL for your question, checks it, and runs it read-only.'}</p>
+            </div>
+            <div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><Icon name="spark" size={30}/></div><div className="art-chip chip-a">SQL <span>✓</span></div><div className="art-chip chip-b">↗ <span>Insights</span></div><div className="art-chip chip-c">✳ <span>AI</span></div></div>
+          </section>
+          <section className="ask-card">
+            <div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">{isMac ? '⌘' : 'Ctrl'} ↵</span></div>
+            <form onSubmit={event => { event.preventDefault(); ask() }}>
+              <textarea aria-label="Your question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder="e.g. Show revenue by customer country" rows="2"/>
+              <div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner" aria-label="Working"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div>
+            </form>
+          </section>
+          {schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> no AI model is connected, so DataTalk only answers question types like the examples below and says so when it can't.</p>}
+          {schemaInfo?.mode === 'ai' && <p className="mode-note"><strong>AI mode:</strong> a language model writes the SQL. Open "View the SQL that ran" before relying on an answer.</p>}
+          <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Explore the demo data</h2></div><span className="suggestion-caption">Questions that work in demo mode</span></div>
+          <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => ask(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
+          {error && <div className="notice error-notice" role="alert"><span>!</span>{error}<button aria-label="Dismiss" onClick={() => setError('')}>×</button></div>}
+          {result && <Results result={result}/>}
+        </>}
+        <footer className="page-footer"><span>Synthetic demo data · read-only</span><a href={REPO_URL} target="_blank" rel="noreferrer">Source code on GitHub</a></footer>
       </div>
     </main>
   </div>
 }
 
 export default App
-
