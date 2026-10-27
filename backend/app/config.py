@@ -23,6 +23,17 @@ class Settings:
     max_result_rows: int = int(os.getenv("MAX_RESULT_ROWS", "200"))
     statement_timeout_ms: int = int(os.getenv("STATEMENT_TIMEOUT_MS", "5000"))
 
+    # CSV uploads are off unless INGEST_DATABASE_URL is set: a limited role that can only create tables in the
+    # uploads schema (never the owner, never the query reader).
+    ingest_database_url: str = os.getenv("INGEST_DATABASE_URL", "")
+    upload_max_bytes: int = int(os.getenv("UPLOAD_MAX_BYTES", str(5 * 1024 * 1024)))
+    upload_max_rows: int = int(os.getenv("UPLOAD_MAX_ROWS", "50000"))
+    upload_max_columns: int = int(os.getenv("UPLOAD_MAX_COLUMNS", "50"))
+    upload_max_cell_chars: int = int(os.getenv("UPLOAD_MAX_CELL_CHARS", "1000"))
+    dataset_ttl_hours: int = int(os.getenv("DATASET_TTL_HOURS", "24"))
+    max_active_datasets: int = int(os.getenv("MAX_ACTIVE_DATASETS", "100"))
+    upload_rate_limit_per_minute: int = int(os.getenv("UPLOAD_RATE_LIMIT_PER_MINUTE", "5"))
+
     cors_origins: list[str] = _csv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
     max_concurrent_queries: int = int(os.getenv("MAX_CONCURRENT_QUERIES", "4"))
