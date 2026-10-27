@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -26,6 +25,7 @@ jobs:
       # Throwaway CI database; these are not real credentials.
       TEST_ADMIN_DATABASE_URL: postgresql+psycopg://datatalk_owner:ci_owner_password@localhost:5432/datatalk_test
       TEST_DATABASE_URL: postgresql+psycopg://datatalk_test_reader:ci_reader_password@localhost:5432/datatalk_test
+      TEST_INGEST_DATABASE_URL: postgresql+psycopg://datatalk_test_ingest:ci_ingest_password@localhost:5432/datatalk_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

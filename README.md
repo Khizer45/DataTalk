@@ -1,16 +1,17 @@
 # DataTalk — ask a database questions in plain English
 
-DataTalk turns a plain-English question into a PostgreSQL query, checks that query, runs it with read-only access, and shows the answer as a table and a simple chart. It is a portfolio and reference project: it ships with a synthetic demo dataset, and it focuses on doing this **safely** and **measurably** rather than on covering every kind of question.
+DataTalk is an open-source, safety-focused text-to-SQL application. You ask questions in plain English about structured data — a synthetic demo database, or a CSV file you upload — and DataTalk writes a PostgreSQL query, checks it, runs it with read-only access, and shows the answer as a table and a simple chart. It focuses on doing this **safely** and **measurably** rather than on covering every kind of question.
 
 It runs in two modes:
 
-- **Demo mode** (no AI key): answers a small set of question types, phrased like the suggested questions. It is deliberately strict: if it does not fully recognise a question it says so instead of guessing.
-- **AI mode** (set `LLM_API_KEY` and `LLM_MODEL`): an OpenAI-compatible model writes the SQL. Everything the model writes still goes through the same checks.
+- **Demo mode** (no AI key): answers a small set of question types about the demo shop, phrased like the suggested questions. It is deliberately strict: if it does not fully recognise a question it says so instead of guessing. Uploaded files can be inspected, but questions about them need AI mode.
+- **AI mode** (set `LLM_API_KEY` and `LLM_MODEL`): an OpenAI-compatible model writes the SQL, for the demo data or for your uploaded file. Everything the model writes still goes through the same checks.
 
 ## How a question is answered
 
 ```
-question → SQL (AI model or demo rules) → validator (SQLGlot) → read-only PostgreSQL role → table + chart
+CSV upload → file checks + type inference → private table in the 'uploads' schema (expires)
+question   → SQL (AI model or demo rules) → validator (SQLGlot) → read-only PostgreSQL role → table + chart
 ```
 
 ## Feature status
@@ -26,8 +27,11 @@ question → SQL (AI model or demo rules) → validator (SQLGlot) → read-only 
 | Rate limit, concurrency cap, daily cap on AI answers | Implemented |
 | Evaluation set (62 questions) and runner | Implemented; AI mode not yet measured |
 | Richer AI prompt (types, keys, glossary, examples), structured AI replies with retry, clarifying questions | Planned |
-| CSV upload, connecting your own database, saved queries | Planned |
-| Authentication | Not implemented |
+| CSV upload: file checks, type inference, private expiring tables, delete | Implemented |
+| Questions about uploaded files | Implemented in AI mode (demo-mode rules only know the demo shop) |
+| Connecting an existing PostgreSQL database from the browser | Not implemented (see [docs/SECURITY.md](docs/SECURITY.md)) |
+| Saved queries, feedback on answers | Planned |
+| User accounts / authentication | Not implemented; uploads are protected by secret per-dataset tokens |
 
 ## Demo dataset
 
@@ -42,15 +46,31 @@ The example queries are kept different from the evaluation questions (a test che
 
 The data includes cases that test real questions: a product that was never ordered, customers who never ordered, and NULL shipped dates.
 
+## Analyze your own CSV
+
+1. Open **Your data**, choose a `.csv` file (commas, semicolons or tabs; column names in the first row) and press **Upload**.
+2. DataTalk checks the file and shows the columns it found: your header, the safe column name used in SQL, and the inferred type (whole number, decimal, true/false, date, date and time, or text).
+3. Press **Ask about this file**, then ask a question. The **Ask about** picker always shows which data you are querying.
+
+Good to know:
+
+- Questions about your own file need AI mode. In demo mode you can upload and inspect a file, but questions about it are declined with an explanation.
+- Limits (configurable): 5 MB, 50,000 rows, 50 columns. Dates must be `YYYY-MM-DD`; numbers must be plain (no thousands separators or currency signs) — anything doubtful is kept as text, so leading zeros such as postcodes survive.
+- The file becomes a private table that is deleted after 24 hours, or when you press **Delete**. The original file is not kept. Only your browser holds the key (a secret token) to the table.
+- The AI model sees the table's column names, never its values.
+
 ## Safety model
 
 Safety does not depend on the AI model behaving well. Each layer works on its own:
 
-1. **Database role.** Queries run as a reader role that can only `SELECT` the exposed tables. PostgreSQL itself enforces read-only mode and statement, lock and idle timeouts for that role. The API refuses to start if its role is a superuser or can write.
+1. **Database roles.** Queries run as a reader role that can only `SELECT`. PostgreSQL itself enforces read-only mode and statement, lock and idle timeouts for that role. The API refuses to start if its role is a superuser or can write. An optional third role imports CSV uploads and can only write to the `uploads` schema; it cannot read the demo tables.
 2. **Validator.** SQLGlot parses the SQL. Only one `SELECT` is accepted, only on the exposed tables, using only allowlisted functions. A row cap is added without loosening a smaller `LIMIT`.
 3. **Execution.** Each query runs in a read-only transaction that is always rolled back.
 4. **API.** Per-client rate limit, a cap on concurrent queries, and a daily cap on AI answers. Users see plain error messages with a reference ID; details stay in the server log.
 5. **Privacy.** Only table and column names are sent to the AI model, never row data.
+6. **Uploads.** Files are size-, row- and column-limited and parsed strictly; headers become safe, quoted column names; values are loaded as data; import is all-or-nothing; each file gets a random private table reachable only with its secret token, and questions about it can only touch that one table.
+
+Full details, the tests behind each safeguard, and the known limits: [docs/SECURITY.md](docs/SECURITY.md). Work in progress and next steps: [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
 
 ## Evaluation
 
@@ -81,13 +101,13 @@ Demo mode answers few questions by design; the important number is that it shows
 Requirements: Docker Compose.
 
 ```bash
-cp .env.example .env   # then set POSTGRES_PASSWORD and READER_PASSWORD
+cp .env.example .env   # then set POSTGRES_PASSWORD, READER_PASSWORD and INGEST_PASSWORD
 docker compose up --build
 ```
 
 Open <http://localhost:5173>. The API is at <http://localhost:8000>; interactive API docs are at <http://localhost:8000/docs>. A one-off `setup` container creates the tables, demo data and reader role before the API starts. The database port is not published.
 
-**Upgrading from an earlier version:** the demo schema changed. If setup reports "older DataTalk demo schema", reset the local database with `docker compose down -v`, then `docker compose up --build`.
+**Upgrading from an earlier version:** add `INGEST_PASSWORD` to your `.env` (needed for CSV uploads; Compose tells you if it is missing). If you come from a version before the larger demo dataset, the demo schema also changed: if setup reports "older DataTalk demo schema", reset the local database with `docker compose down -v`, then `docker compose up --build`.
 
 To enable AI mode, set `LLM_API_KEY` and `LLM_MODEL` in `.env`. `LLM_BASE_URL` defaults to the OpenAI-compatible `/v1` API base.
 
@@ -103,6 +123,7 @@ python -m venv .venv
 pip install -r requirements.txt
 export ADMIN_DATABASE_URL=postgresql+psycopg://<owner>:<password>@localhost:5432/datatalk
 export DATABASE_URL=postgresql+psycopg://datatalk_reader:<reader-password>@localhost:5432/datatalk
+export INGEST_DATABASE_URL=postgresql+psycopg://datatalk_ingest:<ingest-password>@localhost:5432/datatalk  # optional: CSV uploads
 python -m app.setup_db          # once; safe to re-run
 unset ADMIN_DATABASE_URL
 uvicorn app.main:app --reload
@@ -117,6 +138,21 @@ npm run dev
 ```
 
 Vite proxies `/api` requests to `http://localhost:8000`.
+
+The same backend steps in Windows PowerShell:
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:ADMIN_DATABASE_URL = "postgresql+psycopg://<owner>:<password>@localhost:5432/datatalk"
+$env:DATABASE_URL = "postgresql+psycopg://datatalk_reader:<reader-password>@localhost:5432/datatalk"
+$env:INGEST_DATABASE_URL = "postgresql+psycopg://datatalk_ingest:<ingest-password>@localhost:5432/datatalk"
+python -m app.setup_db
+Remove-Item Env:ADMIN_DATABASE_URL
+uvicorn app.main:app --reload
+```
 
 ## Tests
 
@@ -138,7 +174,8 @@ To include the PostgreSQL tests, point them at a database you can throw away (se
 ```bash
 TEST_ADMIN_DATABASE_URL=postgresql+psycopg://<owner>:<password>@localhost:5432/datatalk_test \
 TEST_DATABASE_URL=postgresql+psycopg://datatalk_test_reader:<password>@localhost:5432/datatalk_test \
-pytest
+TEST_INGEST_DATABASE_URL=postgresql+psycopg://datatalk_test_ingest:<password>@localhost:5432/datatalk_test \
+pytest                                   # the last variable enables the CSV-upload tests
 ```
 
 ## Deploy (Neon + Render + Vercel)
@@ -148,9 +185,11 @@ pytest
    cd backend
    ADMIN_DATABASE_URL="postgresql+psycopg://<neon-owner>:<password>@<neon-host>/<db>?sslmode=require" \
    DATABASE_URL="postgresql+psycopg://datatalk_reader:<new-reader-password>@<neon-host>/<db>?sslmode=require" \
+   INGEST_DATABASE_URL="postgresql+psycopg://datatalk_ingest:<new-ingest-password>@<neon-host>/<db>?sslmode=require" \
    python -m app.setup_db
    ```
-2. **Render:** create a Blueprint from this repo (`render.yaml`). Set `DATABASE_URL` to the **reader** URL above (never the owner URL) and leave `CORS_ORIGINS` for step 4.
+   Leave out `INGEST_DATABASE_URL` if you don't want CSV uploads on the public demo.
+2. **Render:** create a Blueprint from this repo (`render.yaml`). Set `DATABASE_URL` to the **reader** URL above (never the owner URL), optionally `INGEST_DATABASE_URL` to the ingest URL, and leave `CORS_ORIGINS` for step 4. Keep `MAX_ACTIVE_DATASETS` small on a free database plan.
 3. **Vercel:** import the repo with **Root Directory** `frontend` and set `VITE_API_BASE_URL` to the Render URL (e.g. `https://datatalk-api.onrender.com`).
 4. **Render again:** set `CORS_ORIGINS` to the Vercel URL and redeploy.
 
@@ -171,6 +210,11 @@ Free tiers sleep when idle; the page shows a "waking up" notice while the API st
 | `CORS_ORIGINS` | localhost:5173 | Frontend origins allowed to call the API |
 | `RATE_LIMIT_PER_MINUTE` | `20` | Questions per client per minute (`0` = no limit) |
 | `MAX_CONCURRENT_QUERIES` | `4` | Queries running at once |
+| `INGEST_DATABASE_URL` | — | Ingest role connection; enables CSV uploads (role limited to the `uploads` schema) |
+| `UPLOAD_MAX_BYTES`, `UPLOAD_MAX_ROWS`, `UPLOAD_MAX_COLUMNS`, `UPLOAD_MAX_CELL_CHARS` | 5 MB, 50,000, 50, 1,000 | Upload limits |
+| `DATASET_TTL_HOURS` | `24` | Hours before an uploaded dataset is deleted |
+| `MAX_ACTIVE_DATASETS` | `100` | Uploaded datasets kept at once (protects database storage) |
+| `UPLOAD_RATE_LIMIT_PER_MINUTE` | `5` | Uploads per client per minute (`0` = no limit) |
 
 ## API
 
@@ -178,7 +222,10 @@ Free tiers sleep when idle; the page shows a "waking up" notice while the API st
 | --- | --- | --- |
 | `GET` | `/api/health` | Service and database status |
 | `GET` | `/api/schema` | Tables with columns, keys, links, meanings and row counts; dataset description and definitions; sample questions; mode (`demo` or `ai`) |
-| `POST` | `/api/query` | Generate, validate and run a read-only query |
+| `POST` | `/api/query` | Generate, validate and run a read-only query. Optional `dataset_id` (with its token in the `X-Dataset-Token` header) asks about an uploaded file |
+| `POST` | `/api/datasets?name=<file name>` | Upload a CSV as the raw request body; returns the dataset, its columns and its secret `access_token` (shown once) |
+| `GET` | `/api/datasets/{id}` | Columns, row count and expiry of an uploaded dataset (needs `X-Dataset-Token`) |
+| `DELETE` | `/api/datasets/{id}` | Delete an uploaded dataset now (needs `X-Dataset-Token`) |
 
 Example:
 
@@ -196,5 +243,7 @@ POST /api/query
 - AI mode accuracy has not been measured yet. The AI model still receives table and column names only; the business context is not yet part of its prompt, and it cannot ask clarifying questions.
 - Demo mode only answers a few phrasings by design.
 - Rate limits and the daily AI cap are in memory, per API instance.
-- Only the bundled demo dataset is supported.
+- Questions about uploaded files need AI mode, and AI-mode accuracy on uploaded files has not been measured.
+- Uploads have no user accounts: the dataset token lives in the browser; see [docs/SECURITY.md](docs/SECURITY.md) for the full list of limits.
+- Connecting an existing PostgreSQL database is not implemented. Self-hosters can point `DATABASE_URL` at their own database with a read-only role and list its tables in `EXPOSED_TABLES` (tables in the `public` schema); this path is not covered by tests yet.
 - CSV download contains the rows shown on screen (at most 100 per question), not the full table.

@@ -10,6 +10,10 @@ services:
     envVars:
       - key: DATABASE_URL        # Neon *reader* role only, never the owner
         sync: false
+      - key: INGEST_DATABASE_URL # optional: Neon ingest role, enables CSV uploads (uploads schema only)
+        sync: false
+      - key: MAX_ACTIVE_DATASETS # keep small on a free database plan
+        value: "50"
       - key: CORS_ORIGINS        # your Vercel URL, e.g. https://datatalk.vercel.app
         sync: false
       - key: FORWARDED_ALLOW_IPS
