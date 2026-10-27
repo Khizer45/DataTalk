@@ -24,7 +24,7 @@ export default function Results({ result }) {
   return <section className="result-card" aria-live="polite">
     <div className="result-heading">
       <div><span className="eyebrow">QUERY RESULTS</span><h2>{result.row_count} {result.row_count === 1 ? 'row' : 'rows'} returned</h2></div>
-      <div className="result-meta"><span className="live-dot"/>{result.generator === 'llm' ? 'AI generated' : 'Demo mode (rules)'}<span className="meta-divider"/>Read only</div>
+      <div className="result-meta"><span className="live-dot"/>{result.generator === 'llm' ? 'AI generated' : 'Demo mode (rules)'}<span className="meta-divider"/>{result.source === 'upload' ? `Your file: ${result.dataset_name}` : 'Demo data'}<span className="meta-divider"/>Read only</div>
     </div>
     <p className="explanation">{result.explanation}</p>
     <details className="sql-panel">

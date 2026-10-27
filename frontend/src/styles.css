@@ -51,4 +51,25 @@ th.num,td.num{text-align:right}
 .sort-button:focus-visible{outline:2px solid #6c60e8;outline-offset:2px;border-radius:3px}
 .sort-mark{font-size:9px;color:#9da2b2}
 th[aria-sort=ascending] .sort-mark,th[aria-sort=descending] .sort-mark{color:#5c50d6}
+.dataset-card+.dataset-card{margin-top:16px}
+.card-title{font:700 16px Manrope,sans-serif;margin:5px 0 12px;color:#262a40}
+.source-picker{display:flex;align-items:center;gap:10px;margin:0 0 12px;font-size:12px;color:#3f465c}
+.source-picker label{font-weight:700}
+.source-picker select{font:inherit;font-size:12px;color:#262a40;background:#fff;border:1px solid #d7d2ff;border-radius:8px;padding:7px 10px;max-width:100%}
+.source-picker select:focus-visible{outline:2px solid #6c60e8;outline-offset:2px}
+.upload-form{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:16px;padding:14px;border:1px dashed #cfc9f5;border-radius:10px;background:#fbfaff}
+.upload-form input[type=file]{font:inherit;font-size:12px;color:#3f465c;flex:1;min-width:0}
+.upload-form .ask-button{font-size:11px}
+.dataset-card .notice{margin-top:14px}
+.file-list{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:8px}
+.file-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border:1px solid #eceef4;border-radius:10px;background:#fafbfe}
+.file-list li.active{border-color:#b9b0f7;background:#f6f5ff}
+.file-list strong{display:block;font-size:12.5px;color:#262a40;word-break:break-word}
+.file-list span{font-size:11px;color:#5d647a}
+.file-actions{display:flex;align-items:center;gap:8px}
+.secondary-button:disabled{opacity:.6;cursor:default}
+.link-button{border:0;background:none;color:#b0473a;font-size:11px;font-weight:600;padding:6px}
+.link-button:hover{text-decoration:underline}
+.link-button:focus-visible{outline:2px solid #6c60e8;outline-offset:2px;border-radius:3px}
+.dataset-card td code{font:10.5px 'Cascadia Code',Consolas,monospace;color:#3f465c}
 @media(max-width:760px){.welcome{overflow:hidden}.sidebar .side-nav .nav-item{display:flex}.table-grid{grid-template-columns:1fr}.dataset-head{flex-direction:column}}

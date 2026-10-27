@@ -8,7 +8,8 @@ function errorMessage(data, status) {
     if (detail.some(item => item?.loc?.includes('question'))) return 'Please enter a question of at least 3 characters.'
     return 'The request was not valid. Please check your question and try again.'
   }
-  if (status === 429) return 'Too many questions in a short time. Please wait a minute.'
+  if (status === 413) return 'The file is too large.'
+  if (status === 429) return 'Too many requests in a short time. Please wait a minute.'
   if (status >= 500) return 'DataTalk is unavailable right now. Please try again shortly.'
   return 'Something went wrong. Please try again.'
 }
@@ -20,8 +21,9 @@ export async function api(path, options) {
   } catch {
     throw new Error('Could not reach the DataTalk API. Check your connection and try again.')
   }
+  if (response.status === 204) return null
   const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(errorMessage(data, response.status))
+  if (!response.ok) throw Object.assign(new Error(errorMessage(data, response.status)), { status: response.status })
   if (data === null) throw new Error('The API returned an unexpected response.')
   return data
 }
