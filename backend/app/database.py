@@ -1,3 +1,4 @@
+import re
 import threading
 
 from sqlalchemy import create_engine, text
@@ -20,6 +21,7 @@ class DatabaseBusyError(RuntimeError):
 
 
 _query_slots = threading.BoundedSemaphore(settings.max_concurrent_queries)
+_SCHEMA_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 def _require_postgres(url: str, name: str) -> str:
@@ -46,14 +48,21 @@ def create_admin_engine() -> Engine:
     return create_engine(_require_postgres(settings.admin_database_url, "ADMIN_DATABASE_URL"))
 
 
-def execute_read_query(sql: str) -> list[dict]:
-    """Run validated SQL in a read-only, time-limited transaction that is always rolled back."""
+def execute_read_query(sql: str, search_path: str | None = None) -> list[dict]:
+    """Run validated SQL in a read-only, time-limited transaction that is always rolled back.
+
+    search_path pins name lookup to one schema (uploaded datasets), so demo tables cannot be reached by name.
+    """
+    if search_path is not None and not _SCHEMA_NAME.match(search_path):
+        raise ValueError("Invalid search_path.")
     if not _query_slots.acquire(timeout=2):
         raise DatabaseBusyError("DataTalk is busy right now. Please try again in a moment.")
     try:
         with get_engine().connect() as connection:
             connection.exec_driver_sql("SET TRANSACTION READ ONLY")
             connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(settings.statement_timeout_ms)}")
+            if search_path is not None:
+                connection.exec_driver_sql(f"SET LOCAL search_path TO {search_path}")
             result = connection.execute(text(sql))
             return [dict(row) for row in result.mappings().all()]
     finally:
