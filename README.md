@@ -4,28 +4,30 @@ DataTalk turns plain-English questions into grounded, read-only SQL and presents
 
 ## Features
 
-- FastAPI API with PostgreSQL and SQLAlchemy (SQLite is available for a quick local run).
-- Schema introspection supplies only table and column metadata to the SQL generator.
-- SQLGlot parses and validates every generated statement; only a single `SELECT` query over known tables is accepted.
-- PostgreSQL runs each query in a read-only transaction with a statement timeout, and result rows are capped.
+- FastAPI API on PostgreSQL (PostgreSQL only).
+- Two database roles: an owner used once by `python -m app.setup_db`, and a read-only reader used for every user query. PostgreSQL enforces read-only mode and timeouts on the reader role itself, and the API refuses to start if its role is a superuser or can write.
+- SQLGlot parses every generated statement. Only a single `SELECT` over the exposed tables, using an allowlist of common functions, is accepted. Row caps never loosen a smaller `LIMIT`.
+- Each query runs in a read-only, time-limited transaction. Users see plain error messages with a reference ID; details go to the server log.
+- Per-client rate limit and a cap on concurrent queries.
 - Dashboard with prompt suggestions, SQL preview, result table, and a compact chart.
-- Curated evaluation run reports SQL/result correctness, execution success, and response accuracy against trusted reference queries.
+- Without an LLM key, a small rule-based demo mode answers the suggested questions and says when it can't answer something.
 
 ## Run with Docker
 
 Requirements: Docker Compose.
 
 ```bash
+cp .env.example .env   # then set POSTGRES_PASSWORD and READER_PASSWORD
 docker compose up --build
 ```
 
-Open <http://localhost:5173>. The API is at <http://localhost:8000>; interactive API docs are at <http://localhost:8000/docs>.
+Open <http://localhost:5173>. The API is at <http://localhost:8000>; interactive API docs are at <http://localhost:8000/docs>. A one-off `setup` container creates the tables, demo data and reader role before the API starts. The database port is not published.
 
-The default Compose configuration connects to PostgreSQL and seeds a small demo dataset on startup. To enable LLM generation, copy `.env.example` to `.env` and set `LLM_API_KEY` and `LLM_MODEL`. `LLM_BASE_URL` defaults to the OpenAI-compatible `/v1` API base.
+To enable LLM generation, set `LLM_API_KEY` and `LLM_MODEL` in `.env`. `LLM_BASE_URL` defaults to the OpenAI-compatible `/v1` API base.
 
 ## Run locally without Docker
 
-Use Python 3.11+ and Node.js 20+.
+Use Python 3.11+, Node.js 20+ and a PostgreSQL 16 database whose owner role can create roles.
 
 ```bash
 cd backend
@@ -33,6 +35,10 @@ python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+export ADMIN_DATABASE_URL=postgresql+psycopg://<owner>:<password>@localhost:5432/datatalk
+export DATABASE_URL=postgresql+psycopg://datatalk_reader:<reader-password>@localhost:5432/datatalk
+python -m app.setup_db          # once; safe to re-run
+unset ADMIN_DATABASE_URL
 uvicorn app.main:app --reload
 ```
 
@@ -44,7 +50,7 @@ npm install
 npm run dev
 ```
 
-Local backend defaults to `sqlite:///./datatalk.db`. Set `DATABASE_URL` to a PostgreSQL URL to use PostgreSQL instead. Vite proxies `/api` requests to `http://localhost:8000`.
+Vite proxies `/api` requests to `http://localhost:8000`.
 
 ## API
 
@@ -53,7 +59,7 @@ Local backend defaults to `sqlite:///./datatalk.db`. Set `DATABASE_URL` to a Pos
 | `GET` | `/api/health` | Service and database status |
 | `GET` | `/api/schema` | Available tables, columns, and sample questions |
 | `POST` | `/api/query` | Generate, validate, and run a read-only query |
-| `POST` | `/api/evaluations/run` | Run the built-in semantic SQL benchmark |
+| `POST` | `/api/evaluations/run` | Placeholder benchmark; disabled unless `ENABLE_EVAL_ENDPOINT=true` (or run `python -m app.evaluation`) |
 
 Example:
 
@@ -65,5 +71,9 @@ POST /api/query
 }
 ```
 
-The app is a development/demo foundation. For production, use a dedicated database account with `SELECT` grants only, authenticate the API, and review schema/table access before connecting business data.
+## Known limitations
 
+- No authentication yet; deploy publicly only with the rate limits configured.
+- The built-in evaluation is a placeholder: in demo mode it reuses its own reference queries, so its score says nothing about accuracy. A real evaluation dataset is planned.
+- LLM output is not yet structured, so the app cannot ask clarifying questions.
+- Rate limits are in memory, per API instance.

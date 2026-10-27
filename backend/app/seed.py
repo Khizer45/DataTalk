@@ -2,14 +2,16 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
-from .database import Base, SessionLocal, engine
+from .database import Base
 from .models import Customer, Order, OrderItem, Product
 
 
-def initialize_database() -> None:
+def initialize_database(engine: Engine) -> None:
     Base.metadata.create_all(engine)
-    with SessionLocal() as db:
+    with Session(engine) as db:
         if db.scalar(select(Customer.id).limit(1)) is not None:
             return
 

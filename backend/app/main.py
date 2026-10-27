@@ -1,28 +1,60 @@
+import logging
+import re
+import threading
+import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
-from .database import engine
+from .database import execute_read_query, get_engine, verify_query_role
+from .errors import describe_database_error
 from .evaluation import run_evaluation
-from .generator import SAMPLE_QUESTIONS, generate_sql, get_schema_context
+from .generator import SAMPLE_QUESTIONS, LLMError, UnsupportedQuestionError, generate_sql, get_schema_context
+from .limits import RateLimiter
 from .safety import UnsafeQueryError, validate_read_query
 from .schemas import QueryRequest
-from .seed import initialize_database
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("datatalk")
+
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+_rate_limiter = RateLimiter(settings.rate_limit_per_minute)
+_query_slots = threading.BoundedSemaphore(settings.max_concurrent_queries)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    initialize_database()
+    verify_query_role(get_engine())
     yield
 
 
-app = FastAPI(title="DataTalk API", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-                   allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["*"])
+app = FastAPI(title="DataTalk API", version="1.1.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
+                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"], expose_headers=["X-Request-ID"])
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    incoming = request.headers.get("X-Request-ID", "")
+    request.state.request_id = incoming if _REQUEST_ID.match(incoming) else uuid.uuid4().hex[:12]
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request.state.request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.exception("unhandled error request_id=%s", request_id)
+    return JSONResponse(status_code=500, content={"detail": f"Something went wrong (reference {request_id})."},
+                        headers={"X-Request-ID": request_id})
 
 
 def _json_value(value):
@@ -36,9 +68,9 @@ def _json_value(value):
 @app.get("/api/health")
 def health():
     try:
-        with engine.connect() as connection:
+        with get_engine().connect() as connection:
             connection.execute(text("SELECT 1"))
-        return {"status": "ok", "database": engine.dialect.name}
+        return {"status": "ok", "database": "postgresql"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
@@ -50,30 +82,48 @@ def schema():
 
 
 @app.post("/api/query")
-def query(request: QueryRequest):
-    tables, context = get_schema_context()
-    allowed = [table["name"] for table in tables]
+def query(payload: QueryRequest, request: Request):
+    request_id = request.state.request_id
+    client = request.client.host if request.client else "unknown"
+    if not _rate_limiter.allow(client):
+        raise HTTPException(status_code=429, detail="Too many questions in a short time. Please wait a minute.")
+
+    limit = min(payload.max_rows, settings.max_result_rows)
     try:
-        candidate, generator, explanation = generate_sql(request.question, context)
-        sql = validate_read_query(candidate, allowed, min(request.max_rows, settings.max_result_rows))
-        with engine.connect() as connection:
-            if engine.dialect.name == "postgresql":
-                connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-                connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(settings.statement_timeout_ms)}")
-            result = connection.execute(text(sql))
-            rows = [{key: _json_value(value) for key, value in row.items()} for row in result.mappings().all()]
-        return {"question": request.question, "sql": sql, "rows": rows, "row_count": len(rows),
-                "truncated": len(rows) >= min(request.max_rows, settings.max_result_rows),
-                "generator": generator, "explanation": explanation}
+        tables, context = get_schema_context()
+        candidate, generator, explanation = generate_sql(payload.question, context)
+        # Fetch one extra row so truncation is reported accurately.
+        sql = validate_read_query(candidate, [table["name"] for table in tables], limit + 1)
+    except UnsupportedQuestionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except UnsafeQueryError as exc:
+        logger.warning("rejected query request_id=%s reason=%s", request_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
+    except LLMError as exc:
+        logger.warning("llm failure request_id=%s cause=%r", request_id, exc.__cause__)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Query could not be completed: {exc}") from exc
+
+    if not _query_slots.acquire(timeout=2):
+        raise HTTPException(status_code=503, detail="DataTalk is busy right now. Please try again in a moment.")
+    try:
+        raw_rows = execute_read_query(sql)
+    except SQLAlchemyError as exc:
+        logger.warning("query failed request_id=%s sql=%r error=%s", request_id, sql, exc)
+        status, message = describe_database_error(exc)
+        raise HTTPException(status_code=status, detail=f"{message} (reference {request_id})") from exc
+    finally:
+        _query_slots.release()
+
+    rows = [{key: _json_value(value) for key, value in row.items()} for row in raw_rows[:limit]]
+    logger.info("query ok request_id=%s generator=%s rows=%d", request_id, generator, len(rows))
+    return {"question": payload.question, "sql": sql, "rows": rows, "row_count": len(rows),
+            "truncated": len(raw_rows) > limit, "generator": generator, "explanation": explanation}
 
 
 @app.post("/api/evaluations/run")
 def evaluations():
+    # Each run makes one LLM call per case, so it is off unless explicitly enabled. Prefer the CLI:
+    # `python -m app.evaluation`.
+    if not settings.enable_eval_endpoint:
+        raise HTTPException(status_code=404, detail="Not found")
     return run_evaluation(settings.max_result_rows)
-

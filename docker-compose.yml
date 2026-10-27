@@ -3,42 +3,52 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: datatalk
-      POSTGRES_USER: datatalk
-      POSTGRES_PASSWORD: datatalk
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: datatalk_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    # No published port: only the containers below can reach the database.
     volumes:
       - datatalk-db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U datatalk -d datatalk"]
+      test: ["CMD-SHELL", "pg_isready -U datatalk_owner -d datatalk"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  # One-off job: tables, demo data and the read-only reader role. Owner credentials stay here, not in the API.
+  setup:
+    build: ./backend
+    command: ["python", "-m", "app.setup_db"]
+    environment:
+      ADMIN_DATABASE_URL: postgresql+psycopg://datatalk_owner:${POSTGRES_PASSWORD}@db:5432/datatalk
+      DATABASE_URL: postgresql+psycopg://datatalk_reader:${READER_PASSWORD:?Set READER_PASSWORD in .env}@db:5432/datatalk
+      STATEMENT_TIMEOUT_MS: ${STATEMENT_TIMEOUT_MS:-5000}
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+psycopg://datatalk:datatalk@db:5432/datatalk
+      DATABASE_URL: postgresql+psycopg://datatalk_reader:${READER_PASSWORD}@db:5432/datatalk
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
       MAX_RESULT_ROWS: ${MAX_RESULT_ROWS:-200}
       STATEMENT_TIMEOUT_MS: ${STATEMENT_TIMEOUT_MS:-5000}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
-      db:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
 
   web:
     build: ./frontend
     environment:
       VITE_API_TARGET: http://api:8000
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     depends_on:
       - api
 
 volumes:
   datatalk-db:
-

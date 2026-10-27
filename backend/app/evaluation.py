@@ -1,25 +1,18 @@
-from sqlalchemy import text
+import json
 
 from .config import settings
-from .database import engine
+from .database import execute_read_query
 from .generator import generate_sql, get_schema_context
 from .safety import validate_read_query
 
 
+# NOTE: a placeholder set. In rules mode the generator returns these same reference queries, so a 100 % score
+# here says nothing about accuracy. A proper evaluation dataset is planned (see README, "Known limitations").
 CASES = [
     {"question": "How many orders are pending?", "reference_sql": "SELECT COUNT(*) AS pending_orders FROM orders WHERE status = 'pending'"},
     {"question": "Show the top 5 products by revenue", "reference_sql": "SELECT p.name AS product, SUM(oi.quantity * oi.unit_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id GROUP BY p.name ORDER BY revenue DESC LIMIT 5"},
     {"question": "Show revenue by customer country", "reference_sql": "SELECT c.country, SUM(o.total_amount) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY c.country ORDER BY revenue DESC"},
 ]
-
-
-def _fetch(sql: str) -> list[dict]:
-    with engine.connect() as connection:
-        if engine.dialect.name == "postgresql":
-            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-            connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(settings.statement_timeout_ms)}")
-        result = connection.execute(text(sql))
-        return [dict(row) for row in result.mappings().all()]
 
 
 def run_evaluation(max_rows: int) -> dict:
@@ -31,9 +24,8 @@ def run_evaluation(max_rows: int) -> dict:
         try:
             candidate, generator, _ = generate_sql(case["question"], schema)
             generated_sql = validate_read_query(candidate, allowed, max_rows)
-            candidate_rows = _fetch(generated_sql)
-            reference_sql = validate_read_query(case["reference_sql"], allowed, max_rows)
-            expected_rows = _fetch(reference_sql)
+            candidate_rows = execute_read_query(generated_sql)
+            expected_rows = execute_read_query(validate_read_query(case["reference_sql"], allowed, max_rows))
             accurate = candidate_rows == expected_rows
             results.append({"question": case["question"], "generator": generator, "sql": generated_sql,
                             "sql_correct": accurate, "execution_success": True,
@@ -44,7 +36,7 @@ def run_evaluation(max_rows: int) -> dict:
             results.append({"question": case["question"], "generator": "n/a", "sql": generated_sql,
                             "sql_correct": False, "execution_success": False,
                             "response_accuracy": 0.0, "expected_rows": None, "actual_rows": None,
-                            "error": str(exc)})
+                            "error": type(exc).__name__})
     total = len(results)
     return {"total_cases": total,
             "sql_correctness": sum(r["sql_correct"] for r in results) / total if total else 0,
@@ -52,3 +44,6 @@ def run_evaluation(max_rows: int) -> dict:
             "response_accuracy": sum(r["response_accuracy"] for r in results) / total if total else 0,
             "results": results}
 
+
+if __name__ == "__main__":
+    print(json.dumps(run_evaluation(settings.max_result_rows), indent=2, default=str))
