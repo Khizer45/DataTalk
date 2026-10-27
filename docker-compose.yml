@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: datatalk
+      POSTGRES_USER: datatalk
+      POSTGRES_PASSWORD: datatalk
+    ports:
+      - "5432:5432"
+    volumes:
+      - datatalk-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datatalk -d datatalk"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://datatalk:datatalk@db:5432/datatalk
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      MAX_RESULT_ROWS: ${MAX_RESULT_ROWS:-200}
+      STATEMENT_TIMEOUT_MS: ${STATEMENT_TIMEOUT_MS:-5000}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: ./frontend
+    environment:
+      VITE_API_TARGET: http://api:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  datatalk-db:
+
