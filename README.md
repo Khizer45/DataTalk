@@ -20,7 +20,7 @@ question → SQL (AI model or demo rules) → validator (SQLGlot) → read-only 
 | Plain-English questions → SQL (AI mode, demo mode) | Implemented |
 | SQL validation: single `SELECT`, exposed tables only, allowlisted functions, row cap | Implemented |
 | Read-only database role with timeouts, enforced by PostgreSQL | Implemented |
-| Results table, bar chart, single-value display, "View the SQL that ran" | Implemented |
+| Results: sortable table, bar chart (when it helps), single-value display, "View the SQL that ran", CSV download of the rows shown | Implemented |
 | Dataset page: tables, columns, row counts, column meanings, table links, definitions | Implemented |
 | Business context file: column meanings, glossary, verified example queries (`backend/app/business_context.json`) | Implemented; shown on the Dataset page, not yet sent to the AI model |
 | Rate limit, concurrency cap, daily cap on AI answers | Implemented |
@@ -126,6 +126,13 @@ pip install -r requirements-dev.txt
 pytest                                   # unit tests; PostgreSQL tests are skipped
 ```
 
+Frontend unit tests (CSV export, sorting, chart choice) use Node's built-in test runner:
+
+```bash
+cd frontend
+npm test
+```
+
 To include the PostgreSQL tests, point them at a database you can throw away (setup creates tables, data and a reader role there):
 
 ```bash
@@ -190,3 +197,4 @@ POST /api/query
 - Demo mode only answers a few phrasings by design.
 - Rate limits and the daily AI cap are in memory, per API instance.
 - Only the bundled demo dataset is supported.
+- CSV download contains the rows shown on screen (at most 100 per question), not the full table.

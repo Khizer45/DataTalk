@@ -39,4 +39,16 @@
 .page-footer a:hover{text-decoration:underline}
 button.connection-card{width:100%;text-align:left;cursor:pointer;font:inherit;color:inherit}
 button.connection-card:hover{border-color:#d7d2ff}
+.table-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:15px;font-size:11px;color:#5d647a}
+.table-tools+.table-wrap{margin-top:8px}
+.secondary-button{border:1px solid #d7d2ff;background:#f6f5ff;color:#4f43c9;border-radius:8px;padding:6px 11px;font-size:11px;font-weight:600}
+.secondary-button:hover{background:#efedff}
+.secondary-button:focus-visible{outline:2px solid #6c60e8;outline-offset:2px}
+.table-wrap{max-height:480px}
+.table-wrap thead th{position:sticky;top:0;z-index:1;font-size:10px;color:#5d647a}
+th.num,td.num{text-align:right}
+.sort-button{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.sort-button:focus-visible{outline:2px solid #6c60e8;outline-offset:2px;border-radius:3px}
+.sort-mark{font-size:9px;color:#9da2b2}
+th[aria-sort=ascending] .sort-mark,th[aria-sort=descending] .sort-mark{color:#5c50d6}
 @media(max-width:760px){.welcome{overflow:hidden}.sidebar .side-nav .nav-item{display:flex}.table-grid{grid-template-columns:1fr}.dataset-head{flex-direction:column}}

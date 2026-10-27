@@ -49,6 +49,7 @@ function ServerNotice({ health }) {
 function App() {
   const [question, setQuestion] = useState('')
   const [result, setResult] = useState(null)
+  const [resultVersion, setResultVersion] = useState(0)
   const [schemaInfo, setSchemaInfo] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -69,6 +70,7 @@ function App() {
     try {
       const data = await api('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: value, max_rows: 100 }) })
       setResult(data)
+      setResultVersion(version => version + 1)
     } catch (err) { setError(err.message); setResult(null) }
     finally { setLoading(false) }
   }
@@ -122,7 +124,7 @@ function App() {
           <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Explore the demo data</h2></div><span className="suggestion-caption">Questions that work in demo mode</span></div>
           <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => ask(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
           {error && <div className="notice error-notice" role="alert"><span>!</span>{error}<button aria-label="Dismiss" onClick={() => setError('')}>×</button></div>}
-          {result && <Results result={result}/>}
+          {result && <Results key={resultVersion} result={result}/>}
         </>}
         <footer className="page-footer"><span>Synthetic demo data · read-only</span><a href={REPO_URL} target="_blank" rel="noreferrer">Source code on GitHub</a></footer>
       </div>

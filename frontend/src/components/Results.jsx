@@ -1,21 +1,25 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { pickChart } from '../chart.js'
+import { csvFilename, downloadCsv, toCsv } from '../csv.js'
 import { formatValue, prettyLabel } from '../format.js'
+import { isNumericColumn, nextDirection, sortRows } from '../sort.js'
 
-const CHART_LIMIT = 12
+const ARIA_SORT = { asc: 'ascending', desc: 'descending' }
 
 export default function Results({ result }) {
+  const [sort, setSort] = useState({ key: null, direction: null })
   const columns = useMemo(() => Object.keys(result.rows[0] || {}), [result])
-  const chart = useMemo(() => {
-    if (result.rows.length < 2) return null
-    const first = result.rows[0]
-    const labelKey = columns.find(key => typeof first[key] === 'string') || columns[0]
-    const valueKey = columns.find(key => typeof first[key] === 'number' && key !== labelKey)
-    if (!valueKey) return null
-    const rows = result.rows.slice(0, CHART_LIMIT)
-    const max = Math.max(...rows.map(row => Number(row[valueKey]) || 0), 1)
-    return { labelKey, valueKey, max, rows }
-  }, [result, columns])
+  const numeric = useMemo(() => new Set(columns.filter(key => isNumericColumn(result.rows, key))), [result, columns])
+  const tableRows = useMemo(() => sortRows(result.rows, sort.key, sort.direction), [result, sort])
+  const chart = useMemo(() => pickChart(result.rows), [result])
   const singleValue = result.rows.length === 1 && columns.length === 1
+
+  function toggleSort(key) {
+    setSort(current => {
+      const direction = nextDirection(current.key === key ? current.direction : null)
+      return { key: direction ? key : null, direction }
+    })
+  }
 
   return <section className="result-card" aria-live="polite">
     <div className="result-heading">
@@ -44,12 +48,22 @@ export default function Results({ result }) {
       </div>)}</div>
     </div>}
 
-    {!singleValue && result.rows.length > 0 && <div className="table-wrap">
-      <table>
-        <thead><tr>{columns.map(key => <th key={key} scope="col">{prettyLabel(key)}</th>)}</tr></thead>
-        <tbody>{result.rows.map((row, i) => <tr key={i}>{columns.map(key => <td key={key}>{formatValue(row[key], key)}</td>)}</tr>)}</tbody>
-      </table>
-      {result.truncated && <div className="table-foot">Showing the first {result.row_count} rows. Ask a narrower question to see fewer.</div>}
-    </div>}
+    {!singleValue && result.rows.length > 0 && <>
+      <div className="table-tools">
+        <span>{sort.key ? `Sorted by ${prettyLabel(sort.key)}, ${ARIA_SORT[sort.direction]}` : 'Click a column name to sort'}</span>
+        <button type="button" className="secondary-button" onClick={() => downloadCsv(csvFilename(result.question), toCsv(columns, tableRows))}>Download CSV</button>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr>{columns.map(key => <th key={key} scope="col" className={numeric.has(key) ? 'num' : undefined} aria-sort={sort.key === key ? ARIA_SORT[sort.direction] : 'none'}>
+            <button type="button" className="sort-button" onClick={() => toggleSort(key)}>
+              {prettyLabel(key)}<span className="sort-mark" aria-hidden="true">{sort.key === key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}</span>
+            </button>
+          </th>)}</tr></thead>
+          <tbody>{tableRows.map((row, i) => <tr key={i}>{columns.map(key => <td key={key} className={numeric.has(key) ? 'num' : undefined}>{formatValue(row[key], key)}</td>)}</tr>)}</tbody>
+        </table>
+        {result.truncated && <div className="table-foot">Showing the first {result.row_count} rows. Ask a narrower question to see fewer.</div>}
+      </div>
+    </>}
   </section>
 }
