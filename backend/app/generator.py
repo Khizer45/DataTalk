@@ -13,17 +13,26 @@ class LLMError(RuntimeError):
 
 
 _llm_quota = DailyQuota(settings.llm_daily_limit)
+_UPLOAD_NEEDS_AI = ("Questions about your own data need AI mode (an LLM API key on the server). "
+                    "Demo mode only answers the suggested questions about the demo shop.")
+_UPLOAD_LIMIT_REACHED = ("This demo has reached today's limit for AI-generated answers, so questions about "
+                         "uploaded data are paused until tomorrow.")
 
 
 def llm_enabled() -> bool:
     return bool(settings.llm_api_key and settings.llm_model)
 
 
-def generate_sql(question: str, schema_context: str) -> tuple[str, str, str]:
-    """Return (sql, generator, explanation). Uses the LLM while today's quota lasts, otherwise the demo rules."""
+def generate_sql(question: str, schema_context: str, allow_rules: bool = True) -> tuple[str, str, str]:
+    """Return (sql, generator, explanation). Uses the LLM while today's quota lasts, otherwise the demo rules.
+
+    allow_rules=False is for uploaded datasets: the demo rules only know the demo tables.
+    """
     if llm_enabled():
         if _llm_quota.try_consume():
             return _llm_sql(question, schema_context)
+        if not allow_rules:
+            raise UnsupportedQuestionError(_UPLOAD_LIMIT_REACHED)
         try:
             sql, explanation = rule_based_sql(question)
         except UnsupportedQuestionError as exc:
@@ -32,6 +41,8 @@ def generate_sql(question: str, schema_context: str) -> tuple[str, str, str]:
                 "still work in demo mode; open-ended questions will work again tomorrow."
             ) from exc
         return sql, "rules", explanation
+    if not allow_rules:
+        raise UnsupportedQuestionError(_UPLOAD_NEEDS_AI)
     sql, explanation = rule_based_sql(question)
     return sql, "rules", explanation
 
