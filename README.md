@@ -52,6 +52,21 @@ npm run dev
 
 Vite proxies `/api` requests to `http://localhost:8000`.
 
+## Deploy (Neon + Render + Vercel)
+
+1. **Neon:** create a project and database. From your machine, run setup once with Neon's owner connection string:
+   ```bash
+   cd backend
+   ADMIN_DATABASE_URL="postgresql+psycopg://<neon-owner>:<password>@<neon-host>/<db>?sslmode=require" \
+   DATABASE_URL="postgresql+psycopg://datatalk_reader:<new-reader-password>@<neon-host>/<db>?sslmode=require" \
+   python -m app.setup_db
+   ```
+2. **Render:** create a Blueprint from this repo (`render.yaml`). Set `DATABASE_URL` to the **reader** URL above (never the owner URL) and leave `CORS_ORIGINS` for step 4.
+3. **Vercel:** import the repo with **Root Directory** `frontend` and set `VITE_API_BASE_URL` to the Render URL (e.g. `https://datatalk-api.onrender.com`).
+4. **Render again:** set `CORS_ORIGINS` to the Vercel URL and redeploy.
+
+Free tiers sleep when idle, so the first request after a pause can be slow. If you add an LLM key, set a spending limit with the provider.
+
 ## API
 
 | Method | Path | Purpose |

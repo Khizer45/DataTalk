@@ -22,10 +22,31 @@ function Icon({ name, size = 18 }) {
   return <svg {...common}>{paths[name] || paths.grid}</svg>
 }
 
+// Empty in local dev (Vite proxies /api); set VITE_API_BASE_URL to the API's URL when the frontend is hosted separately.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+
+function errorMessage(data, status) {
+  const detail = data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    if (detail.some(item => item?.loc?.includes('question'))) return 'Please enter a question of at least 3 characters.'
+    return 'The request was not valid. Please check your question and try again.'
+  }
+  if (status === 429) return 'Too many questions in a short time. Please wait a minute.'
+  if (status >= 500) return 'DataTalk is unavailable right now. Please try again shortly.'
+  return 'Something went wrong. Please try again.'
+}
+
 async function api(path, options) {
-  const response = await fetch(path, options)
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.detail || 'Something went wrong')
+  let response
+  try {
+    response = await fetch(`${API_BASE}${path}`, options)
+  } catch {
+    throw new Error('Could not reach the DataTalk API. Check your connection and try again.')
+  }
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(data, response.status))
+  if (data === null) throw new Error('The API returned an unexpected response.')
   return data
 }
 
@@ -115,7 +136,7 @@ function App() {
       <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{activeNav}</strong></div><div className="top-actions"><span className="safe-pill"><span className="safe-icon"><Icon name="check" size={12}/></span>Read-only mode</span><button className="avatar small-avatar" title="Workspace profile">DT</button></div></header>
       <div className="page-content">
         <section className="welcome"><div className="welcome-copy"><div className="welcome-kicker"><span className="kicker-line"/> YOUR DATA, AT YOUR FINGERTIPS</div><h1>Good morning.<br/><span>What would you like to know?</span></h1><p>Ask a question in plain English. DataTalk will query your data and bring back the answer.</p></div><div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><Icon name="spark" size={30}/></div><div className="art-chip chip-a">SQL <span>✓</span></div><div className="art-chip chip-b">↗ <span>Insights</span></div><div className="art-chip chip-c">✳ <span>AI</span></div></div></section>
-        <section className="ask-card"><div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">⌘ ↵</span></div><form onSubmit={event => { event.preventDefault(); ask() }}><textarea value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder="e.g. Which products generated the most revenue last quarter?" rows="2"/><div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div></form></section>
+        <section className="ask-card"><div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">⌘ ↵</span></div><form onSubmit={event => { event.preventDefault(); ask() }}><textarea value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder="e.g. Show revenue by customer country" rows="2"/><div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div></form></section>
         <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Explore your data</h2></div><span className="suggestion-caption">A few questions to get you started</span></div>
         <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => ask(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
         {error && <div className="notice error-notice"><span>!</span>{error}<button onClick={() => setError('')}>×</button></div>}

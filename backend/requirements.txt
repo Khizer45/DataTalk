@@ -1,6 +1,5 @@
-fastapi>=0.115,<1.0
-uvicorn[standard]>=0.34,<1.0
-sqlalchemy>=2.0,<3.0
-psycopg[binary]>=3.2,<4.0
-sqlglot>=26,<30
-
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+sqlalchemy==2.1.6
+psycopg[binary]==3.3.6
+sqlglot==29.0.1

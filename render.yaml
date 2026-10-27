@@ -1,0 +1,26 @@
+# Render Blueprint for the API. The database is hosted on Neon and the frontend on Vercel.
+services:
+  - type: web
+    name: datatalk-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL        # Neon *reader* role only, never the owner
+        sync: false
+      - key: CORS_ORIGINS        # your Vercel URL, e.g. https://datatalk.vercel.app
+        sync: false
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
+      - key: LLM_BASE_URL
+        value: https://api.openai.com/v1
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: MAX_CONCURRENT_QUERIES
+        value: "4"
