@@ -57,3 +57,11 @@ def test_rejects_schema_qualified_tables():
 def test_rejects_functions_outside_the_allowlist():
     with pytest.raises(UnsafeQueryError, match="not allowed"):
         validate_read_query("SELECT md5(name) FROM customers", TABLES, 100)
+
+
+def test_only_fixable_rejections_are_marked_retryable():
+    with pytest.raises(UnsafeQueryError) as write_attempt:
+        validate_read_query("DELETE FROM orders", TABLES, 100)
+    with pytest.raises(UnsafeQueryError) as unknown_table:
+        validate_read_query("SELECT * FROM staff", TABLES, 100)
+    assert write_attempt.value.retryable is False and unknown_table.value.retryable is True

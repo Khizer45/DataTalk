@@ -1,6 +1,5 @@
 import logging
 import re
-import threading
 import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -12,12 +11,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
-from .database import execute_read_query, get_engine, verify_query_role
+from .database import DatabaseBusyError, execute_read_query, get_engine, verify_query_role
 from .errors import describe_database_error
-from .generator import (SAMPLE_QUESTIONS, LLMError, UnsupportedQuestionError, generate_sql, get_schema_context,
-                        get_table_row_counts, llm_enabled)
+from .generator import LLMError, generate_sql, llm_enabled
 from .limits import RateLimiter
+from .rules import SAMPLE_QUESTIONS, UnsupportedQuestionError
 from .safety import UnsafeQueryError, validate_read_query
+from .schema_info import describe_schema, get_definitions, get_table_row_counts, get_tables
 from .schemas import QueryRequest
 from .seed import DATASET_INFO
 
@@ -26,7 +26,6 @@ logger = logging.getLogger("datatalk")
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 _rate_limiter = RateLimiter(settings.rate_limit_per_minute)
-_query_slots = threading.BoundedSemaphore(settings.max_concurrent_queries)
 
 
 @asynccontextmanager
@@ -78,11 +77,11 @@ def health():
 
 @app.get("/api/schema")
 def schema():
-    tables, _ = get_schema_context()
+    tables = get_tables()
     counts = get_table_row_counts([table["name"] for table in tables])
-    for table in tables:
-        table["row_count"] = counts[table["name"]]
-    return {"tables": tables, "sample_questions": SAMPLE_QUESTIONS, "dataset": DATASET_INFO,
+    definitions = [f"{item['term']}: {item['definition']}" for item in get_definitions()]
+    return {"tables": [{**table, "row_count": counts[table["name"]]} for table in tables],
+            "sample_questions": SAMPLE_QUESTIONS, "dataset": {**DATASET_INFO, "definitions": definitions},
             "mode": "ai" if llm_enabled() else "demo"}
 
 
@@ -95,10 +94,9 @@ def query(payload: QueryRequest, request: Request):
 
     limit = min(payload.max_rows, settings.max_result_rows)
     try:
-        tables, context = get_schema_context()
-        candidate, generator, explanation = generate_sql(payload.question, context)
+        candidate, generator, explanation = generate_sql(payload.question, describe_schema("basic"))
         # Fetch one extra row so truncation is reported accurately.
-        sql = validate_read_query(candidate, [table["name"] for table in tables], limit + 1)
+        sql = validate_read_query(candidate, [table["name"] for table in get_tables()], limit + 1)
     except UnsupportedQuestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except UnsafeQueryError as exc:
@@ -108,16 +106,14 @@ def query(payload: QueryRequest, request: Request):
         logger.warning("llm failure request_id=%s cause=%r", request_id, exc.__cause__)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    if not _query_slots.acquire(timeout=2):
-        raise HTTPException(status_code=503, detail="DataTalk is busy right now. Please try again in a moment.")
     try:
         raw_rows = execute_read_query(sql)
+    except DatabaseBusyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
         logger.warning("query failed request_id=%s sql=%r error=%s", request_id, sql, exc)
         status, message = describe_database_error(exc)
         raise HTTPException(status_code=status, detail=f"{message} (reference {request_id})") from exc
-    finally:
-        _query_slots.release()
 
     rows = [{key: _json_value(value) for key, value in row.items()} for row in raw_rows[:limit]]
     logger.info("query ok request_id=%s generator=%s rows=%d", request_id, generator, len(rows))

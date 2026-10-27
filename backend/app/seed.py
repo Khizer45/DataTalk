@@ -22,8 +22,6 @@ DATASET_INFO = {
     "description": ("Synthetic sales data for a small software shop: customers, products, orders and "
                     "order lines from January 2024 to December 2025. Invented names; no real people."),
     "synthetic": True,
-    "definitions": ["Revenue counts completed orders only; pending and cancelled orders are excluded.",
-                    "shipped_date is empty (NULL) until an order ships."],
 }
 
 SEED = 7

@@ -11,7 +11,7 @@ class Settings:
     # Owner role, used only by `python -m app.setup_db` to create tables, seed data and the reader role.
     admin_database_url: str = os.getenv("ADMIN_DATABASE_URL", "")
     exposed_tables: list[str] = _csv("EXPOSED_TABLES", "customers,products,orders,order_items")
-    # Descriptions, glossary and verified examples for the model (default: app/business_context.json).
+    # Table and column meanings, glossary and verified examples (default: app/business_context.json).
     business_context_path: str = os.getenv("BUSINESS_CONTEXT_PATH", "")
 
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -19,13 +19,6 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "")
     # AI-answered questions per UTC day before falling back to demo mode (0 = no cap).
     llm_daily_limit: int = int(os.getenv("LLM_DAILY_LIMIT", "200"))
-    # "full" sends types, keys, descriptions, glossary and examples; "basic" sends names only (for comparisons).
-    llm_context: str = os.getenv("LLM_CONTEXT", "full")
-    # Extra attempts when the model's reply is unusable or its SQL fails in a fixable way.
-    llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "1"))
-    # Ask for a JSON reply via response_format; turn off for providers that reject the parameter.
-    llm_json_mode: bool = os.getenv("LLM_JSON_MODE", "true").lower() == "true"
-    llm_timeout_seconds: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 
     max_result_rows: int = int(os.getenv("MAX_RESULT_ROWS", "200"))
     statement_timeout_ms: int = int(os.getenv("STATEMENT_TIMEOUT_MS", "5000"))

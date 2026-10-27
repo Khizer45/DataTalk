@@ -22,8 +22,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
 from .database import execute_read_query
-from .generator import LLMError, UnsupportedQuestionError, generate_sql, get_schema_context, get_table_row_counts, llm_enabled
+from .generator import LLMError, generate_sql, llm_enabled
+from .rules import UnsupportedQuestionError
 from .safety import UnsafeQueryError, validate_read_query
+from .schema_info import describe_schema, get_table_row_counts, get_tables
 
 EVAL_DIR = Path(__file__).resolve().parent.parent / "eval"
 ROW_LIMIT = 1000
@@ -144,8 +146,8 @@ def summarize(results: list[dict]) -> dict:
 
 
 def run_evaluation(cases: list[dict]) -> dict:
-    tables, schema = get_schema_context()
-    allowed = [table["name"] for table in tables]
+    allowed = [table["name"] for table in get_tables()]
+    schema = describe_schema("basic")
     results = [run_case(case, schema, allowed) for case in cases]
     return {
         "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

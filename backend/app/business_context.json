@@ -48,7 +48,7 @@
      "sql": "SELECT p.name AS product, COUNT(DISTINCT o.id) AS cancelled_orders FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id WHERE o.status = 'cancelled' GROUP BY p.name ORDER BY cancelled_orders DESC LIMIT 3"},
     {"question": "What share of Website orders were cancelled in 2025, as a percentage?",
      "sql": "SELECT ROUND(100.0 * AVG(CASE WHEN status = 'cancelled' THEN 1.0 ELSE 0 END), 1) AS cancelled_percent FROM orders WHERE channel = 'Website' AND order_date >= '2025-01-01' AND order_date < '2026-01-01'"},
-    {"question": "List Enterprise customers in Germany who have not ordered since the end of June 2025.",
-     "sql": "SELECT c.name FROM customers c WHERE c.segment = 'Enterprise' AND c.country = 'Germany' AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.order_date > '2025-06-30')"}
+    {"question": "List Enterprise customers who have not ordered since the end of June 2025.",
+     "sql": "SELECT c.name FROM customers c WHERE c.segment = 'Enterprise' AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.order_date > '2025-06-30')"}
   ]
 }
