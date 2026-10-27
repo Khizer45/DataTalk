@@ -1,16 +1,76 @@
-# DataTalk — Natural Language Database Analyst
+# DataTalk — ask a database questions in plain English
 
-DataTalk turns plain-English questions into grounded, read-only SQL and presents the results in a small analytics dashboard. It ships with sample sales data so the full flow works without an LLM key; configure an OpenAI-compatible endpoint to use an LLM for SQL generation.
+DataTalk turns a plain-English question into a PostgreSQL query, checks that query, runs it with read-only access, and shows the answer as a table and a simple chart. It is a portfolio and reference project: it ships with a synthetic demo dataset, and it focuses on doing this **safely** and **measurably** rather than on covering every kind of question.
 
-## Features
+It runs in two modes:
 
-- FastAPI API on PostgreSQL (PostgreSQL only).
-- Two database roles: an owner used once by `python -m app.setup_db`, and a read-only reader used for every user query. PostgreSQL enforces read-only mode and timeouts on the reader role itself, and the API refuses to start if its role is a superuser or can write.
-- SQLGlot parses every generated statement. Only a single `SELECT` over the exposed tables, using an allowlist of common functions, is accepted. Row caps never loosen a smaller `LIMIT`.
-- Each query runs in a read-only, time-limited transaction. Users see plain error messages with a reference ID; details go to the server log.
-- Per-client rate limit and a cap on concurrent queries.
-- Dashboard with prompt suggestions, SQL preview, result table, and a compact chart.
-- Without an LLM key, a small rule-based demo mode answers the suggested questions and says when it can't answer something.
+- **Demo mode** (no AI key): answers a small set of question types, phrased like the suggested questions. It is deliberately strict: if it does not fully recognise a question it says so instead of guessing.
+- **AI mode** (set `LLM_API_KEY` and `LLM_MODEL`): an OpenAI-compatible model writes the SQL. Everything the model writes still goes through the same checks.
+
+## How a question is answered
+
+```
+question → SQL (AI model or demo rules) → validator (SQLGlot) → read-only PostgreSQL role → table + chart
+```
+
+## Feature status
+
+| Feature | Status |
+| --- | --- |
+| Plain-English questions → SQL (AI mode, demo mode) | Implemented |
+| SQL validation: single `SELECT`, exposed tables only, allowlisted functions, row cap | Implemented |
+| Read-only database role with timeouts, enforced by PostgreSQL | Implemented |
+| Results table, bar chart, single-value display, "View the SQL that ran" | Implemented |
+| Dataset page: tables, columns, row counts, data definitions | Implemented |
+| Rate limit, concurrency cap, daily cap on AI answers | Implemented |
+| Evaluation set (62 questions) and runner | Implemented; AI mode not yet measured |
+| Clarifying questions, glossary, CSV upload, connecting your own database, saved queries | Planned |
+| Authentication | Not implemented |
+
+## Demo dataset
+
+A synthetic online software shop, January 2024 to December 2025: 250 customers, 13 products, 2,431 orders and 3,604 order lines. Names are invented and emails use `example.com`. The data is generated from a fixed seed (`backend/app/seed.py`), so every install gets identical rows on any recent Python version.
+
+Definitions used everywhere (demo rules, evaluation, Dataset page):
+
+- **Revenue** counts completed orders only; pending and cancelled orders are excluded.
+- `shipped_date` is empty (NULL) until an order ships.
+
+The data includes cases that test real questions: a product that was never ordered, customers who never ordered, and NULL shipped dates.
+
+## Safety model
+
+Safety does not depend on the AI model behaving well. Each layer works on its own:
+
+1. **Database role.** Queries run as a reader role that can only `SELECT` the exposed tables. PostgreSQL itself enforces read-only mode and statement, lock and idle timeouts for that role. The API refuses to start if its role is a superuser or can write.
+2. **Validator.** SQLGlot parses the SQL. Only one `SELECT` is accepted, only on the exposed tables, using only allowlisted functions. A row cap is added without loosening a smaller `LIMIT`.
+3. **Execution.** Each query runs in a read-only transaction that is always rolled back.
+4. **API.** Per-client rate limit, a cap on concurrent queries, and a daily cap on AI answers. Users see plain error messages with a reference ID; details stay in the server log.
+5. **Privacy.** Only table and column names are sent to the AI model, never row data.
+
+## Evaluation
+
+`backend/eval/cases.json` holds 62 tagged questions about the demo data: 50 that should be answered (filters, aggregates, group-by, dates, NULLs, joins, top-N) and 12 that should be declined (data that doesn't exist, ambiguous questions, requests to change data). Each answerable question has a reference query. An answer passes when its rows match the reference rows; column names, row order (unless it matters) and extra columns are allowed to differ.
+
+```bash
+cd backend
+python -m app.evaluation                 # writes eval/results/<date>-<mode>.json
+```
+
+With Docker (uses the API container's settings, including your AI key if set):
+
+```bash
+docker compose run --rm -v ./backend/eval:/app/eval api python -m app.evaluation
+```
+
+Measured baseline (2026-10-27, `eval/results/2026-10-27-rules.json`):
+
+| Mode | Correct answers (50) | Wrong answers shown | Declined when it should (12) |
+| --- | --- | --- | --- |
+| Demo mode (rules) | 12.0% | 0.0% | 100% |
+| AI mode | not measured yet | | |
+
+Demo mode answers few questions by design; the important number is that it shows no wrong answers. "Wrong answers shown" counts results that look like answers but are wrong, which users cannot easily spot. Keep the evaluation questions out of any prompt examples, or the scores stop meaning anything.
 
 ## Run with Docker
 
@@ -23,7 +83,9 @@ docker compose up --build
 
 Open <http://localhost:5173>. The API is at <http://localhost:8000>; interactive API docs are at <http://localhost:8000/docs>. A one-off `setup` container creates the tables, demo data and reader role before the API starts. The database port is not published.
 
-To enable LLM generation, set `LLM_API_KEY` and `LLM_MODEL` in `.env`. `LLM_BASE_URL` defaults to the OpenAI-compatible `/v1` API base.
+**Upgrading from an earlier version:** the demo schema changed. If setup reports "older DataTalk demo schema", reset the local database with `docker compose down -v`, then `docker compose up --build`.
+
+To enable AI mode, set `LLM_API_KEY` and `LLM_MODEL` in `.env`. `LLM_BASE_URL` defaults to the OpenAI-compatible `/v1` API base.
 
 ## Run locally without Docker
 
@@ -52,6 +114,22 @@ npm run dev
 
 Vite proxies `/api` requests to `http://localhost:8000`.
 
+## Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest                                   # unit tests; PostgreSQL tests are skipped
+```
+
+To include the PostgreSQL tests, point them at a database you can throw away (setup creates tables, data and a reader role there):
+
+```bash
+TEST_ADMIN_DATABASE_URL=postgresql+psycopg://<owner>:<password>@localhost:5432/datatalk_test \
+TEST_DATABASE_URL=postgresql+psycopg://datatalk_test_reader:<password>@localhost:5432/datatalk_test \
+pytest
+```
+
 ## Deploy (Neon + Render + Vercel)
 
 1. **Neon:** create a project and database. From your machine, run setup once with Neon's owner connection string:
@@ -65,16 +143,30 @@ Vite proxies `/api` requests to `http://localhost:8000`.
 3. **Vercel:** import the repo with **Root Directory** `frontend` and set `VITE_API_BASE_URL` to the Render URL (e.g. `https://datatalk-api.onrender.com`).
 4. **Render again:** set `CORS_ORIGINS` to the Vercel URL and redeploy.
 
-Free tiers sleep when idle, so the first request after a pause can be slow. If you add an LLM key, set a spending limit with the provider.
+Free tiers sleep when idle; the page shows a "waking up" notice while the API starts. If you add an AI key, also set a spending limit with the provider: `LLM_DAILY_LIMIT` is kept in memory and resets when the server restarts. Vercel's free Hobby plan is for non-commercial use, so don't use it for a page that sells services.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | — | Reader role connection (required by the API) |
+| `ADMIN_DATABASE_URL` | — | Owner connection, only for `python -m app.setup_db` |
+| `EXPOSED_TABLES` | the four demo tables | Tables the reader may query and the model may see |
+| `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | OpenAI base URL, empty, empty | AI mode settings |
+| `LLM_DAILY_LIMIT` | `200` | AI answers per UTC day before falling back to demo mode (`0` = no cap) |
+| `MAX_RESULT_ROWS` | `200` | Maximum rows returned per question |
+| `STATEMENT_TIMEOUT_MS` | `5000` | Query time limit |
+| `CORS_ORIGINS` | localhost:5173 | Frontend origins allowed to call the API |
+| `RATE_LIMIT_PER_MINUTE` | `20` | Questions per client per minute (`0` = no limit) |
+| `MAX_CONCURRENT_QUERIES` | `4` | Queries running at once |
 
 ## API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Service and database status |
-| `GET` | `/api/schema` | Available tables, columns, and sample questions |
-| `POST` | `/api/query` | Generate, validate, and run a read-only query |
-| `POST` | `/api/evaluations/run` | Placeholder benchmark; disabled unless `ENABLE_EVAL_ENDPOINT=true` (or run `python -m app.evaluation`) |
+| `GET` | `/api/schema` | Tables with columns and row counts, dataset description, sample questions, mode (`demo` or `ai`) |
+| `POST` | `/api/query` | Generate, validate and run a read-only query |
 
 Example:
 
@@ -88,7 +180,8 @@ POST /api/query
 
 ## Known limitations
 
-- No authentication yet; deploy publicly only with the rate limits configured.
-- The built-in evaluation is a placeholder: in demo mode it reuses its own reference queries, so its score says nothing about accuracy. A real evaluation dataset is planned.
-- LLM output is not yet structured, so the app cannot ask clarifying questions.
-- Rate limits are in memory, per API instance.
+- No authentication; public deployments rely on rate limits and the daily AI cap.
+- AI mode accuracy has not been measured yet, and the AI does not yet ask clarifying questions or use a glossary.
+- Demo mode only answers a few phrasings by design.
+- Rate limits and the daily AI cap are in memory, per API instance.
+- Only the bundled demo dataset is supported.
