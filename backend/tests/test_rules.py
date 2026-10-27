@@ -1,22 +1,22 @@
 import pytest
 
 from app import generator
-from app.generator import SAMPLE_QUESTIONS, UnsupportedQuestionError, _fallback_sql
 from app.limits import DailyQuota
+from app.rules import SAMPLE_QUESTIONS, UnsupportedQuestionError, rule_based_sql
 
 
 @pytest.mark.parametrize("question", SAMPLE_QUESTIONS)
 def test_every_suggested_question_is_answered(question):
-    sql, explanation = _fallback_sql(question)
+    sql, explanation = rule_based_sql(question)
     assert sql.startswith("SELECT") and explanation
 
 
 def test_top_n_uses_the_requested_number():
-    assert _fallback_sql("Show the top 3 products by revenue")[0].endswith("LIMIT 3")
+    assert rule_based_sql("Show the top 3 products by revenue")[0].endswith("LIMIT 3")
 
 
 def test_case_spacing_and_punctuation_are_ignored():
-    assert _fallback_sql("  how many PENDING orders are there?? ")[0] == _fallback_sql("How many orders are pending?")[0]
+    assert rule_based_sql("  how many PENDING orders are there?? ")[0] == rule_based_sql("How many orders are pending?")[0]
 
 
 @pytest.mark.parametrize("question", [
@@ -28,18 +28,18 @@ def test_case_spacing_and_punctuation_are_ignored():
 ])
 def test_questions_with_extra_conditions_are_declined_not_guessed(question):
     with pytest.raises(UnsupportedQuestionError):
-        _fallback_sql(question)
+        rule_based_sql(question)
 
 
 def test_date_ranges_get_a_specific_message():
     with pytest.raises(UnsupportedQuestionError, match="date ranges"):
-        _fallback_sql("Which products generated the most revenue last quarter?")
+        rule_based_sql("Which products generated the most revenue last quarter?")
 
 
 @pytest.mark.parametrize("question", ["What was total revenue by month?", "Show the top 5 products by revenue",
                                       "Show revenue by customer country"])
 def test_revenue_counts_completed_orders_only(question):
-    assert "status = 'completed'" in _fallback_sql(question)[0]
+    assert "status = 'completed'" in rule_based_sql(question)[0]
 
 
 @pytest.fixture

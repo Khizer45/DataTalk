@@ -11,11 +11,13 @@ class Settings:
     # Owner role, used only by `python -m app.setup_db` to create tables, seed data and the reader role.
     admin_database_url: str = os.getenv("ADMIN_DATABASE_URL", "")
     exposed_tables: list[str] = _csv("EXPOSED_TABLES", "customers,products,orders,order_items")
+    # Table and column meanings, glossary and verified examples (default: app/business_context.json).
+    business_context_path: str = os.getenv("BUSINESS_CONTEXT_PATH", "")
 
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
-    # AI-generated answers per UTC day before falling back to demo mode (0 = no cap).
+    # AI-answered questions per UTC day before falling back to demo mode (0 = no cap).
     llm_daily_limit: int = int(os.getenv("LLM_DAILY_LIMIT", "200"))
 
     max_result_rows: int = int(os.getenv("MAX_RESULT_ROWS", "200"))

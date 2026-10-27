@@ -1,0 +1,54 @@
+{
+  "tables": {
+    "customers": "One row per customer account.",
+    "products": "One row per product in the catalog.",
+    "orders": "One row per order. Each order belongs to one customer and has one or more order_items.",
+    "order_items": "One row per product line in an order."
+  },
+  "columns": {
+    "customers.name": {"description": "Customer's full name (invented)."},
+    "customers.email": {"description": "Customer's email address."},
+    "customers.country": {"description": "Customer's country.", "list_values": true},
+    "customers.segment": {"description": "Customer type.", "list_values": true},
+    "customers.created_at": {"description": "Date the customer signed up.", "show_range": true},
+    "products.name": {"description": "Product name."},
+    "products.category": {"description": "Product group.", "list_values": true},
+    "products.unit_price": {"description": "Current list price in US dollars."},
+    "orders.order_date": {"description": "Date the order was placed.", "show_range": true},
+    "orders.status": {"description": "Order state. Only completed orders count as revenue.", "list_values": true},
+    "orders.channel": {"description": "Where the order was placed.", "list_values": true},
+    "orders.total_amount": {"description": "Order total in US dollars; equals the sum of quantity * unit_price over its order_items."},
+    "orders.shipped_date": {"description": "Date the order shipped. NULL until it ships; only completed orders have one."},
+    "order_items.quantity": {"description": "Units of the product in this order line."},
+    "order_items.unit_price": {"description": "Price per unit when the order was placed, in US dollars."}
+  },
+  "glossary": [
+    {"term": "Revenue",
+     "definition": "Money from completed orders only; pending and cancelled orders are excluded.",
+     "sql": "SUM(orders.total_amount) for orders with status = 'completed'. For revenue by product or category use SUM(order_items.quantity * order_items.unit_price) over order_items of completed orders."},
+    {"term": "Average order value",
+     "definition": "Average total of completed orders.",
+     "sql": "AVG(orders.total_amount) for orders with status = 'completed'"},
+    {"term": "Cancellation rate",
+     "definition": "Share of all orders that were cancelled.",
+     "sql": "AVG(CASE WHEN orders.status = 'cancelled' THEN 1.0 ELSE 0 END)"},
+    {"term": "Shipped order",
+     "definition": "An order with a shipped_date. Only completed orders ship."}
+  ],
+  "notes": [
+    "The data is a fixed snapshot. Interpret relative dates such as 'last month' or 'this year' relative to the latest order_date in the data, not today's date, and say so in assumptions.",
+    "All amounts are in US dollars."
+  ],
+  "examples": [
+    {"question": "What was the revenue from Partner orders in the first quarter of 2025?",
+     "sql": "SELECT SUM(total_amount) AS revenue FROM orders WHERE status = 'completed' AND channel = 'Partner' AND order_date >= '2025-01-01' AND order_date < '2025-04-01'"},
+    {"question": "Show monthly revenue from Small business customers in 2024.",
+     "sql": "SELECT to_char(date_trunc('month', o.order_date), 'YYYY-MM') AS month, SUM(o.total_amount) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.status = 'completed' AND c.segment = 'Small business' AND o.order_date >= '2024-01-01' AND o.order_date < '2025-01-01' GROUP BY 1 ORDER BY 1"},
+    {"question": "Which 3 products appear in the most cancelled orders?",
+     "sql": "SELECT p.name AS product, COUNT(DISTINCT o.id) AS cancelled_orders FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id WHERE o.status = 'cancelled' GROUP BY p.name ORDER BY cancelled_orders DESC LIMIT 3"},
+    {"question": "What share of Website orders were cancelled in 2025, as a percentage?",
+     "sql": "SELECT ROUND(100.0 * AVG(CASE WHEN status = 'cancelled' THEN 1.0 ELSE 0 END), 1) AS cancelled_percent FROM orders WHERE channel = 'Website' AND order_date >= '2025-01-01' AND order_date < '2026-01-01'"},
+    {"question": "List Enterprise customers who have not ordered since the end of June 2025.",
+     "sql": "SELECT c.name FROM customers c WHERE c.segment = 'Enterprise' AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.order_date > '2025-06-30')"}
+  ]
+}

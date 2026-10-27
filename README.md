@@ -21,20 +21,24 @@ question → SQL (AI model or demo rules) → validator (SQLGlot) → read-only 
 | SQL validation: single `SELECT`, exposed tables only, allowlisted functions, row cap | Implemented |
 | Read-only database role with timeouts, enforced by PostgreSQL | Implemented |
 | Results table, bar chart, single-value display, "View the SQL that ran" | Implemented |
-| Dataset page: tables, columns, row counts, data definitions | Implemented |
+| Dataset page: tables, columns, row counts, column meanings, table links, definitions | Implemented |
+| Business context file: column meanings, glossary, verified example queries (`backend/app/business_context.json`) | Implemented; shown on the Dataset page, not yet sent to the AI model |
 | Rate limit, concurrency cap, daily cap on AI answers | Implemented |
 | Evaluation set (62 questions) and runner | Implemented; AI mode not yet measured |
-| Clarifying questions, glossary, CSV upload, connecting your own database, saved queries | Planned |
+| Richer AI prompt (types, keys, glossary, examples), structured AI replies with retry, clarifying questions | Planned |
+| CSV upload, connecting your own database, saved queries | Planned |
 | Authentication | Not implemented |
 
 ## Demo dataset
 
 A synthetic online software shop, January 2024 to December 2025: 250 customers, 13 products, 2,431 orders and 3,604 order lines. Names are invented and emails use `example.com`. The data is generated from a fixed seed (`backend/app/seed.py`), so every install gets identical rows on any recent Python version.
 
-Definitions used everywhere (demo rules, evaluation, Dataset page):
+Definitions used everywhere (demo rules, evaluation, Dataset page) live in `backend/app/business_context.json`, together with what each table and column means and a few verified example queries:
 
 - **Revenue** counts completed orders only; pending and cancelled orders are excluded.
 - `shipped_date` is empty (NULL) until an order ships.
+
+The example queries are kept different from the evaluation questions (a test checks this), so they can later be shown to the AI model without inflating its scores.
 
 The data includes cases that test real questions: a product that was never ordered, customers who never ordered, and NULL shipped dates.
 
@@ -152,6 +156,7 @@ Free tiers sleep when idle; the page shows a "waking up" notice while the API st
 | `DATABASE_URL` | — | Reader role connection (required by the API) |
 | `ADMIN_DATABASE_URL` | — | Owner connection, only for `python -m app.setup_db` |
 | `EXPOSED_TABLES` | the four demo tables | Tables the reader may query and the model may see |
+| `BUSINESS_CONTEXT_PATH` | `backend/app/business_context.json` | Table and column meanings, glossary and verified examples |
 | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | OpenAI base URL, empty, empty | AI mode settings |
 | `LLM_DAILY_LIMIT` | `200` | AI answers per UTC day before falling back to demo mode (`0` = no cap) |
 | `MAX_RESULT_ROWS` | `200` | Maximum rows returned per question |
@@ -165,7 +170,7 @@ Free tiers sleep when idle; the page shows a "waking up" notice while the API st
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Service and database status |
-| `GET` | `/api/schema` | Tables with columns and row counts, dataset description, sample questions, mode (`demo` or `ai`) |
+| `GET` | `/api/schema` | Tables with columns, keys, links, meanings and row counts; dataset description and definitions; sample questions; mode (`demo` or `ai`) |
 | `POST` | `/api/query` | Generate, validate and run a read-only query |
 
 Example:
@@ -181,7 +186,7 @@ POST /api/query
 ## Known limitations
 
 - No authentication; public deployments rely on rate limits and the daily AI cap.
-- AI mode accuracy has not been measured yet, and the AI does not yet ask clarifying questions or use a glossary.
+- AI mode accuracy has not been measured yet. The AI model still receives table and column names only; the business context is not yet part of its prompt, and it cannot ask clarifying questions.
 - Demo mode only answers a few phrasings by design.
 - Rate limits and the daily AI cap are in memory, per API instance.
 - Only the bundled demo dataset is supported.

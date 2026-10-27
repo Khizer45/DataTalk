@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app import evaluation, main
 from app.database import get_engine
-from app.generator import SAMPLE_QUESTIONS
+from app.rules import SAMPLE_QUESTIONS
 from app.limits import RateLimiter
 
 
@@ -29,6 +29,10 @@ def test_schema_describes_the_demo_dataset(client):
     counts = {table["name"]: table["row_count"] for table in body["tables"]}
     assert counts == {"customers": 250, "products": 13, "orders": 2431, "order_items": 3604}
     assert body["mode"] == "demo" and body["dataset"]["synthetic"] is True
+    assert any(item.startswith("Revenue:") for item in body["dataset"]["definitions"])
+    orders = next(table for table in body["tables"] if table["name"] == "orders")
+    customer_id = next(column for column in orders["columns"] if column["name"] == "customer_id")
+    assert customer_id["references"] == "customers.id" and orders["description"]
 
 
 @pytest.mark.parametrize("question", SAMPLE_QUESTIONS)
@@ -55,8 +59,7 @@ def test_rate_limit(client, monkeypatch):
 
 def test_every_evaluation_reference_query_runs(database):
     cases = json.loads((evaluation.EVAL_DIR / "cases.json").read_text())["cases"]
-    tables, _ = evaluation.get_schema_context()
-    allowed = [table["name"] for table in tables]
+    allowed = [table["name"] for table in evaluation.get_tables()]
     for case in cases:
         for sql in [case.get("sql"), *case.get("alt_sql", [])]:
             if sql:
