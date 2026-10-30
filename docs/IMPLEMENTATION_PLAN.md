@@ -23,14 +23,7 @@ The repository was audited and hardened over earlier milestones. What exists and
 Baseline checks at the start of this milestone: backend `pytest` 74 passed; frontend `npm test`
 17 passed; `npm run build` succeeds; CI green on `main`.
 
-## Known limit in this working session
-
-The LLM model-client code (prompt construction and the structured-reply parser — roadmap items 6
-and 7) cannot be authored in this session; the safety system stops those edits. The existing
-AI-mode call in `generator.py` is unchanged and still works. CSV upload below reuses that pipeline
-and does **not** require writing new model code, so it is buildable here.
-
-## Milestone: CSV upload (this branch)
+## Milestone: CSV upload
 
 Goal: a user uploads a CSV, DataTalk infers its schema into an isolated table, and the user can ask
 questions about that specific dataset through the same validated, read-only pipeline as the demo.
@@ -133,9 +126,76 @@ databases safely, without letting visitors supply connection strings.
 - A per-dataset database role would add a database-level layer between uploads (see SECURITY.md).
 - Scheduled cleanup instead of cleanup on upload/start.
 
+## Milestone: structured AI replies, bounded retry, clarifying questions and assumptions (items 6–7)
+
+Goal: make AI mode say what it assumed, ask instead of guessing when a question is ambiguous, and recover once from a
+fixable mistake, without loosening any check. (Deferred from the CSV milestone, when the model-client code could not
+be written in that session.)
+
+### Design
+
+- **Two reply forms, parsed strictly** (`generator.parse_reply`): `{"sql", "explanation", "assumptions"}` or
+  `{"clarification": {"question", "options"}}`. Exact key sets, string types, size limits (SQL 8,000 characters,
+  explanation 500, at most 5 assumptions of 300, 2–4 distinct options of 3–200), repeated keys refused, nothing
+  outside the object except one optional markdown fence. No provider "JSON mode" is requested, so any
+  OpenAI-compatible endpoint keeps working; the strict reader and the retry cover models that drift from the format.
+- **One bounded retry** (`answer_question`): at most two model calls per question. Retried: a malformed reply, an
+  `UnsafeQueryError` with `retryable=True`, PostgreSQL 42703/42P01 (unknown column or table). Not retried: write
+  attempts (`retryable=False`), other database errors, transport failures. The retry repeats the conversation with
+  the model's previous reply and the problem; PostgreSQL's message and hint name only columns and tables, so row data
+  still never reaches the model. Every call consumes `LLM_DAILY_LIMIT`; with no quota left, the first failure is
+  reported. The retry's SQL is validated against the same per-request allowlist and runs read-only like any query.
+- **Clarifying questions:** `/api/query` returns 200 with `clarification` and runs nothing. The prompt asks for each
+  option to be a complete question (the reader checks it is a valid one, 3–200 characters), so choosing one in the UI
+  asks it about the same data. The server stores no conversation; the request format is unchanged.
+- **Stated assumptions:** returned as `assumptions` and shown under the results with a "Rephrase" button. The prompt
+  includes today's date (UTC) so relative dates ("last month") can be stated as real months.
+- **One pipeline for the app and the evaluation:** `answer_question(question, schema, allowed_tables, row_limit, run)`
+  generates, validates and runs; `main.py` passes the request's `search_path` and engine, the evaluation the reader.
+  The demo-rules path is unchanged (rules → validator → read-only run, no retry, no clarification).
+- **Evaluation:** a clarification counts as declining (right for ambiguous questions, a miss but not a wrong answer
+  for answerable ones); each case records its model calls (`attempts`), and the summary adds
+  `clarified_answerable_rate` and `retry_rate`.
+
+### Status
+
+- [x] Strict reply parser, retry loop, quota per call, fixable database errors — `generator.py`, `errors.py`.
+- [x] API: `assumptions` and `clarification` on `/api/query`; retries logged with `model_calls`.
+- [x] Evaluation through the same pipeline; clarification outcome; per-call records.
+- [x] Frontend: clarification card with one button per option (asks it about the same data), assumptions under the
+  results with "Rephrase", AI-mode note updated.
+- [x] Tests: stand-in model in `conftest.py` now replaces only the HTTP call (strict parsing, retry, validation and
+  execution are real) and supports per-call replies; `test_generator.py` (50 unit tests, including a real HTTP call to
+  a local stand-in server), `test_ai_postgres.py` (12), retry isolation for uploads and connected databases, one
+  evaluation test, one frontend test file.
+
+### Verified results (this milestone)
+
+- Backend: 242 tests pass with uploads enabled (twice in a row); 218 pass + 24 skipped without the ingest role;
+  169 pass + 73 skipped without a database.
+- Frontend: 26 unit tests pass; production build succeeds.
+- Demo-mode evaluation unchanged: 12% answered, 0% wrong answers shown, 100% correct declines; all 62 per-case
+  outcomes identical to before the change.
+- Each safeguard was disabled in turn and the tests failed: retrying write attempts, allowing a second retry, not
+  counting the retry against the cap, accepting extra keys, skipping validation of the retry's SQL, retrying every
+  database error, running SQL for a clarification. Skipping validation of the retry is caught by the PostgreSQL tests
+  for demo data, uploads and connected databases, not only by unit tests.
+- Browser-checked with the real API in AI mode and a stand-in OpenAI-compatible server: clarification card and option
+  buttons (desktop and a 390 px phone, no sideways scrolling); choosing an option asks it and shows the assumptions
+  under the results; "Rephrase" focuses the question box; "last month" shown as September 2026 next to a $0 result (the
+  demo data ends in 2025); a misspelt column fixed by one retry using PostgreSQL's hint; a reply that stays malformed
+  shows a clear error; with no key, demo mode looks and answers as before.
+- **Not measured:** real-model accuracy, how often a real model asks for clarification when it should (or when it
+  should not), and how much the retry helps. No API key was available. `python -m app.evaluation` with a key reports
+  all three.
+
+### Remaining for AI mode
+
+- Measure AI mode with a real model (needs an API key), on the demo data and on uploads.
+- Richer prompt (item 5): types, keys, glossary and verified examples from `business_context.json`.
+
 ## Deferred (not in this milestone)
 
-- Structured AI replies, bounded retry, clarifying questions (items 6–7; blocked this session).
 - Visitors connecting their own database from the browser (needs user accounts, encrypted credential storage,
   destination allowlists and TLS verification; server-configured sources cover the self-hosted case).
 - User accounts, saved analyses persistence, MCP mode, local models, AWS specifics.
