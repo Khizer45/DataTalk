@@ -3,9 +3,11 @@ import { api } from './api.js'
 import DatasetView from './components/DatasetView.jsx'
 import Icon from './components/Icon.jsx'
 import Results from './components/Results.jsx'
+import SourcesCard, { KeyForm } from './components/SourcesCard.jsx'
 import UploadView from './components/UploadView.jsx'
 import { formatCount } from './format.js'
-import { loadDatasets, saveDatasets } from './storage.js'
+import { sourceSuggestions, sourceValue } from './sources.js'
+import { loadDatasets, loadSourceKeys, saveDatasets, saveSourceKeys } from './storage.js'
 import { suggestQuestions } from './suggestions.js'
 
 const REPO_URL = 'https://github.com/Khizer45/DataTalk'
@@ -64,6 +66,8 @@ function App() {
   const [view, setView] = useState('ask')
   const [datasets, setDatasets] = useState(() => loadDatasets())
   const [activeId, setActiveId] = useState(DEMO)
+  const [sourceKeys, setSourceKeys] = useState(() => loadSourceKeys())
+  const [unlocked, setUnlocked] = useState({})
   const health = useServerHealth()
 
   useEffect(() => {
@@ -72,26 +76,58 @@ function App() {
   }, [health, schemaInfo])
 
   useEffect(() => saveDatasets(datasets), [datasets])
+  useEffect(() => saveSourceKeys(sourceKeys), [sourceKeys])
 
   const counts = Object.fromEntries((schemaInfo?.tables || []).map(table => [table.name, table.row_count]))
   const viewLabel = views.find(item => item.id === view).label
+  const sources = schemaInfo?.sources ?? []
   const active = datasets.find(dataset => dataset.id === activeId)
-  const suggestions = active ? suggestQuestions(active.columns) : []
+  const activeSource = sources.find(source => sourceValue(source.id) === activeId)
+  const sourceTables = activeSource && (activeSource.tables ?? unlocked[activeSource.id])
+  const locked = Boolean(activeSource && !sourceTables)
+  const suggestions = active ? suggestQuestions(active.columns) : activeSource ? sourceSuggestions(sourceTables) : []
+
+  // A key saved earlier in this tab is checked again (and the tables fetched) when its database is chosen.
+  useEffect(() => {
+    if (!activeSource?.needs_key || unlocked[activeSource.id] || !sourceKeys[activeSource.id]) return
+    unlock(activeSource, sourceKeys[activeSource.id]).catch(() => {})
+  }, [activeSource, unlocked, sourceKeys])
 
   function forget(id) {
     setDatasets(list => list.filter(dataset => dataset.id !== id))
     setActiveId(current => (current === id ? DEMO : current))
   }
 
+  function forgetKey(id) {
+    setSourceKeys(({ [id]: _, ...rest }) => rest)
+    setUnlocked(({ [id]: _, ...rest }) => rest)
+  }
+
+  async function unlock(source, key) {
+    try {
+      const info = await api(`/api/sources/${source.id}`, { headers: { 'X-Source-Key': key } })
+      setUnlocked(current => ({ ...current, [source.id]: info.tables }))
+      setSourceKeys(current => ({ ...current, [source.id]: key }))
+    } catch (err) {
+      if (err.status === 403) forgetKey(source.id)
+      throw err
+    }
+  }
+
   async function ask(value = question, sourceId = activeId) {
     if (!value.trim()) return
     const dataset = datasets.find(item => item.id === sourceId)
+    const source = sources.find(item => sourceValue(item.id) === sourceId)
+    const headers = { 'Content-Type': 'application/json' }
+    if (dataset) headers['X-Dataset-Token'] = dataset.access_token
+    if (source && sourceKeys[source.id]) headers['X-Source-Key'] = sourceKeys[source.id]
     setView('ask'); setQuestion(value); setLoading(true); setError('')
     try {
       const data = await api('/api/query', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(dataset ? { 'X-Dataset-Token': dataset.access_token } : {}) },
-        body: JSON.stringify({ question: value, max_rows: 100, ...(dataset ? { dataset_id: dataset.id } : {}) }),
+        headers,
+        body: JSON.stringify({ question: value, max_rows: 100, ...(dataset ? { dataset_id: dataset.id } : {}),
+          ...(source ? { source_id: source.id } : {}) }),
       })
       setResult(data)
       setResultVersion(version => version + 1)
@@ -100,6 +136,7 @@ function App() {
         forget(dataset.id)
         setError('That file has expired or was deleted, so DataTalk switched back to the demo data.')
       } else {
+        if (source && err.status === 403) forgetKey(source.id)
         setError(err.message)
       }
       setResult(null)
@@ -152,41 +189,49 @@ function App() {
       <div className="page-content">
         <ServerNotice health={health}/>
         {view === 'dataset' && <DatasetView schemaInfo={schemaInfo} health={health}/>}
-        {view === 'uploads' && <UploadView uploads={schemaInfo?.uploads} mode={schemaInfo?.mode} datasets={datasets} activeId={activeId}
-          onUploaded={uploaded} onUse={id => { setActiveId(id); setView('ask') }} onDelete={deleteDataset}/>}
+        {view === 'uploads' && <>
+          <UploadView uploads={schemaInfo?.uploads} mode={schemaInfo?.mode} datasets={datasets} activeId={activeId}
+            onUploaded={uploaded} onUse={id => { setActiveId(id); setView('ask') }} onDelete={deleteDataset}/>
+          <SourcesCard sources={sources} unlocked={unlocked} activeId={activeId} onUse={id => { setActiveId(id); setView('ask') }}/>
+        </>}
         {view === 'ask' && <>
           <section className="welcome">
             <div className="welcome-copy">
-              <div className="welcome-kicker"><span className="kicker-line"/> {active ? 'AI DATABASE ANALYST · YOUR DATA' : 'AI DATABASE ANALYST · DEMO'}</div>
+              <div className="welcome-kicker"><span className="kicker-line"/> {active ? 'AI DATABASE ANALYST · YOUR DATA' : activeSource ? 'AI DATABASE ANALYST · CONNECTED DATABASE' : 'AI DATABASE ANALYST · DEMO'}</div>
               <h1>Ask questions about data<br/><span>in plain English.</span></h1>
               <p>{active
                 ? `Asking about your file "${active.name}": ${formatCount(active.row_count)} rows and ${active.columns.length} columns, stored as a private table. DataTalk writes the SQL, checks it, and runs it read-only.`
-                : schemaInfo
+                : activeSource
+                  ? `Asking about the database "${activeSource.label}"${sourceTables ? ` (${sourceTables.length} ${sourceTables.length === 1 ? 'table' : 'tables'})` : ''}, connected by whoever runs this DataTalk with a read-only account. DataTalk writes the SQL, checks it, and runs it read-only.`
+                  : schemaInfo
                   ? `This demo uses a synthetic online-shop dataset: ${formatCount(counts.customers ?? 0)} customers and ${formatCount(counts.orders ?? 0)} orders from 2024–2025. DataTalk writes the SQL, checks it, and runs it read-only.`
                   : 'DataTalk writes the SQL for your question, checks it, and runs it read-only.'}</p>
             </div>
             <div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><Icon name="spark" size={30}/></div><div className="art-chip chip-a">SQL <span>✓</span></div><div className="art-chip chip-b">↗ <span>Insights</span></div><div className="art-chip chip-c">✳ <span>AI</span></div></div>
           </section>
-          {datasets.length > 0 && <div className="source-picker">
+          {(datasets.length > 0 || sources.length > 0) && <div className="source-picker">
             <label htmlFor="source">Ask about</label>
             <select id="source" value={activeId} onChange={event => setActiveId(event.target.value)}>
               <option value={DEMO}>Demo online shop (synthetic)</option>
               {datasets.map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.name} (your file)</option>)}
+              {sources.map(source => <option key={source.id} value={sourceValue(source.id)}>{source.label} (database)</option>)}
             </select>
           </div>}
+          {locked && <KeyForm key={activeSource.id} source={activeSource} onUnlock={unlock}/>}
           <section className="ask-card">
             <div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">{isMac ? '⌘' : 'Ctrl'} ↵</span></div>
             <form onSubmit={event => { event.preventDefault(); ask() }}>
-              <textarea aria-label="Your question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder={active ? `e.g. ${suggestions[0]}` : 'e.g. Show revenue by customer country'} rows="2"/>
+              <textarea aria-label="Your question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder={suggestions.length ? `e.g. ${suggestions[0]}` : activeSource ? 'Ask a question about this database' : 'e.g. Show revenue by customer country'} rows="2"/>
               <div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner" aria-label="Working"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div>
             </form>
           </section>
           {active && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> questions about your own file need AI mode, which is off on this server, so they will be declined. Switch back to the demo data to try the example questions.</p>}
-          {!active && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> no AI model is connected, so DataTalk only answers question types like the examples below and says so when it can't.</p>}
+          {activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> questions about a connected database need AI mode, which is off on this server, so they will be declined.</p>}
+          {!active && !activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> no AI model is connected, so DataTalk only answers question types like the examples below and says so when it can't.</p>}
           {schemaInfo?.mode === 'ai' && <p className="mode-note"><strong>AI mode:</strong> a language model writes the SQL. Open "View the SQL that ran" before relying on an answer.</p>}
-          {active ? <>
-            <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Ask about your file</h2></div><span className="suggestion-caption">Built from your column names</span></div>
-            <section className="suggestion-grid">{suggestions.map((text, i) => <button className="suggestion-card" key={text} onClick={() => ask(text)}><div className={`suggestion-icon si-${i}`}>?</div><div className="suggestion-text"><span>Your data</span><strong>{text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
+          {active || activeSource ? suggestions.length > 0 && <>
+            <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>{active ? 'Ask about your file' : 'Ask about this database'}</h2></div><span className="suggestion-caption">{active ? 'Built from your column names' : `Built from the ${sourceTables[0].name} table's columns`}</span></div>
+            <section className="suggestion-grid">{suggestions.map((text, i) => <button className="suggestion-card" key={text} onClick={() => ask(text)}><div className={`suggestion-icon si-${i}`}>?</div><div className="suggestion-text"><span>{active ? 'Your data' : 'Database'}</span><strong>{text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
           </> : <>
             <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Explore the demo data</h2></div><span className="suggestion-caption">Questions that work in demo mode</span></div>
             <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => askDemo(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>

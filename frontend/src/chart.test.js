@@ -36,4 +36,5 @@ test('identifiers are shown without thousands separators', () => {
   assert.equal(formatValue(2425, 'customer_id'), '2425')
   assert.equal(formatValue(2425, 'orders'), '2,425')
   assert.equal(formatValue(1245, 'total_amount'), '$1,245')
+  assert.equal(formatValue(1245, 'total_amount', { money: false }), '1,245')  // uploads: currency unknown
 })

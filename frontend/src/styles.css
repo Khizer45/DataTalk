@@ -73,3 +73,19 @@ th[aria-sort=ascending] .sort-mark,th[aria-sort=descending] .sort-mark{color:#5c
 .link-button:focus-visible{outline:2px solid #6c60e8;outline-offset:2px;border-radius:3px}
 .dataset-card td code{font:10.5px 'Cascadia Code',Consolas,monospace;color:#3f465c}
 @media(max-width:760px){.welcome{overflow:hidden}.sidebar .side-nav .nav-item{display:flex}.table-grid{grid-template-columns:1fr}.dataset-head{flex-direction:column}}
+.review-table td{vertical-align:top}
+.review-table input,.review-table select,.key-form input{font:inherit;font-size:12px;color:#262a40;background:#fff;border:1px solid #d7d2ff;border-radius:7px;padding:6px 8px;max-width:220px}
+.review-table input{font-family:'Cascadia Code',Consolas,monospace;font-size:11px;width:180px}
+.review-table input[aria-invalid=true]{border-color:#d9897c;background:#fff8f6}
+.review-table input:focus-visible,.review-table select:focus-visible,.key-form input:focus-visible{outline:2px solid #6c60e8;outline-offset:1px}
+.field-error,.field-hint{display:block;margin-top:5px;font-size:10.5px;white-space:normal;max-width:220px;line-height:1.4}
+.field-error{color:#a8483b}
+.field-hint{color:#5c50d6}
+.review-table td.samples{color:#5d647a;max-width:260px;white-space:normal;word-break:break-word}
+.review-actions{display:flex;align-items:center;gap:12px;margin-top:16px}
+.review-actions .ask-button{font-size:11px}
+.upload-status{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:#454c63}
+.key-form{display:grid;gap:8px;margin:0 0 14px;padding:12px 14px;border:1px solid #dfe3f3;border-radius:10px;background:#f6f7fd;font-size:12px;color:#3f465c}
+.key-form>div{display:flex;flex-wrap:wrap;gap:8px}
+.key-form input{width:260px;max-width:100%}
+@media(max-width:760px){.review-wrap{max-height:none}.review-table thead{display:none}.review-table,.review-table tbody,.review-table tr,.review-table td{display:block;width:100%}.review-table tr{padding:10px 0;border-bottom:1px solid #eceef4}.review-table tbody tr:last-child{border-bottom:0}.review-table td{border:0;padding:4px 2px;white-space:normal}.review-table td::before{content:attr(data-label);display:block;margin-bottom:4px;font-size:9px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#a1a6b5}.review-table input,.review-table select{width:100%;max-width:none}.review-table td.samples{max-width:none}}

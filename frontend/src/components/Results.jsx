@@ -13,6 +13,7 @@ export default function Results({ result }) {
   const tableRows = useMemo(() => sortRows(result.rows, sort.key, sort.direction), [result, sort])
   const chart = useMemo(() => pickChart(result.rows), [result])
   const singleValue = result.rows.length === 1 && columns.length === 1
+  const show = (value, key) => formatValue(value, key, { money: !result.source || result.source === 'demo' })
 
   function toggleSort(key) {
     setSort(current => {
@@ -24,7 +25,7 @@ export default function Results({ result }) {
   return <section className="result-card" aria-live="polite">
     <div className="result-heading">
       <div><span className="eyebrow">QUERY RESULTS</span><h2>{result.row_count} {result.row_count === 1 ? 'row' : 'rows'} returned</h2></div>
-      <div className="result-meta"><span className="live-dot"/>{result.generator === 'llm' ? 'AI generated' : 'Demo mode (rules)'}<span className="meta-divider"/>{result.source === 'upload' ? `Your file: ${result.dataset_name}` : 'Demo data'}<span className="meta-divider"/>Read only</div>
+      <div className="result-meta"><span className="live-dot"/>{result.generator === 'llm' ? 'AI generated' : 'Demo mode (rules)'}<span className="meta-divider"/>{result.source === 'upload' ? `Your file: ${result.dataset_name}` : result.source === 'database' ? `Database: ${result.dataset_name}` : 'Demo data'}<span className="meta-divider"/>Read only</div>
     </div>
     <p className="explanation">{result.explanation}</p>
     <details className="sql-panel">
@@ -34,7 +35,7 @@ export default function Results({ result }) {
 
     {result.rows.length === 0 && <p className="explanation">No rows matched this question.</p>}
 
-    {singleValue && <div className="stat-block"><span>{prettyLabel(columns[0])}</span><strong>{formatValue(result.rows[0][columns[0]], columns[0])}</strong></div>}
+    {singleValue && <div className="stat-block"><span>{prettyLabel(columns[0])}</span><strong>{show(result.rows[0][columns[0]], columns[0])}</strong></div>}
 
     {chart && <div className="chart-block">
       <div className="chart-title">
@@ -42,9 +43,9 @@ export default function Results({ result }) {
         <span className="chart-unit">{chart.rows.length < result.rows.length ? `First ${chart.rows.length} of ${result.rows.length} rows` : `${result.rows.length} rows`}</span>
       </div>
       <div className="bars">{chart.rows.map((row, index) => <div className="bar-row" key={`${row[chart.labelKey]}-${index}`}>
-        <span className="bar-label" title={String(row[chart.labelKey])}>{formatValue(row[chart.labelKey], chart.labelKey)}</span>
+        <span className="bar-label" title={String(row[chart.labelKey])}>{show(row[chart.labelKey], chart.labelKey)}</span>
         <div className="bar-track"><div className={`bar-fill tone-${index % 4}`} style={{ width: `${Math.max(3, (Number(row[chart.valueKey]) / chart.max) * 100)}%` }}/></div>
-        <span className="bar-value">{formatValue(row[chart.valueKey], chart.valueKey)}</span>
+        <span className="bar-value">{show(row[chart.valueKey], chart.valueKey)}</span>
       </div>)}</div>
     </div>}
 
@@ -60,7 +61,7 @@ export default function Results({ result }) {
               {prettyLabel(key)}<span className="sort-mark" aria-hidden="true">{sort.key === key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}</span>
             </button>
           </th>)}</tr></thead>
-          <tbody>{tableRows.map((row, i) => <tr key={i}>{columns.map(key => <td key={key} className={numeric.has(key) ? 'num' : undefined}>{formatValue(row[key], key)}</td>)}</tr>)}</tbody>
+          <tbody>{tableRows.map((row, i) => <tr key={i}>{columns.map(key => <td key={key} className={numeric.has(key) ? 'num' : undefined}>{show(row[key], key)}</td>)}</tr>)}</tbody>
         </table>
         {result.truncated && <div className="table-foot">Showing the first {result.row_count} rows. Ask a narrower question to see fewer.</div>}
       </div>

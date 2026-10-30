@@ -22,3 +22,23 @@ export function saveDatasets(datasets) {
 export function hoursLeft(expiresAt, now = Date.now()) {
   return Math.max(0, Math.round((Date.parse(expiresAt) - now) / 3_600_000))
 }
+
+// Access keys for connected databases, kept only for this browser tab (sessionStorage), never in localStorage.
+const SOURCE_KEYS = 'datatalk.sourceKeys'
+
+function tabStore() {
+  try { return globalThis.sessionStorage ?? null } catch { return null }
+}
+
+export function loadSourceKeys() {
+  try {
+    const saved = JSON.parse(tabStore()?.getItem(SOURCE_KEYS) ?? '{}')
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+  } catch {
+    return {}
+  }
+}
+
+export function saveSourceKeys(keys) {
+  try { tabStore()?.setItem(SOURCE_KEYS, JSON.stringify(keys)) } catch { /* storage unavailable; keep in memory */ }
+}
