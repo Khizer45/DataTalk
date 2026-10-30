@@ -109,3 +109,83 @@ def test_display_name_is_plain_text():
     assert display_name("C:\\Users\\me\\sales\x07 2025.csv") == "sales 2025.csv"
     assert display_name("../../etc/passwd") == "passwd"
     assert display_name("") == "Uploaded data"
+
+
+# Reviewing columns before import: the uploader can rename columns and choose how values are read.
+
+REVIEW = (b"Order Ref,Amount,Paid,Order Date,Shipped\n"
+          b"007,\"$1,200.50\",yes,03/04/2025,2025-04-03 10:15\n"
+          b"042,\"Rs 1,20,000\",no,28/02/2025,\n"
+          b"105,(350),Y,01/12/2024,2025-01-02\n")
+
+
+def test_preview_offers_only_types_every_value_fits():
+    preview = csv_import.preview_csv(REVIEW)
+    columns = {column["label"]: column for column in preview["columns"]}
+    assert preview["row_count"] == 3
+    assert columns["Order Ref"]["type"] == "text"  # leading zeros: inference keeps text...
+    assert "integer" in columns["Order Ref"]["choices"]  # ...but the uploader may choose a number
+    assert columns["Amount"]["choices"] == ["text", "decimal"]
+    assert columns["Paid"]["choices"] == ["text", "boolean"]
+    assert columns["Order Date"]["choices"] == ["text", "date_dmy"]  # 28/02 rules out month-first
+    assert columns["Shipped"]["choices"] == ["text", "timestamp"]
+    assert columns["Amount"]["samples"] == ["$1,200.50", "Rs 1,20,000", "(350)"]
+    assert columns["Shipped"]["nullable"] and not columns["Amount"]["nullable"]
+
+
+def test_reviewed_names_and_types_are_applied():
+    overrides = [{"name": "order_ref", "type": "text"}, {"name": "amount_pkr", "type": "decimal"},
+                 {"name": "paid", "type": "boolean"}, {"name": "ordered_on", "type": "date_dmy"},
+                 {"name": "shipped_at", "type": "timestamp"}]
+    parsed = parse_csv(REVIEW, overrides)
+    assert [(c.name, c.label, c.type) for c in parsed.columns] == [
+        ("order_ref", "Order Ref", "text"), ("amount_pkr", "Amount", "decimal"), ("paid", "Paid", "boolean"),
+        ("ordered_on", "Order Date", "date"), ("shipped_at", "Shipped", "timestamp")]
+    assert parsed.rows[0] == ["007", Decimal("1200.50"), True, date(2025, 4, 3), datetime(2025, 4, 3, 10, 15)]
+    assert parsed.rows[1][1:4] == [Decimal("120000"), False, date(2025, 2, 28)] and parsed.rows[1][4] is None
+    assert parsed.rows[2][1] == Decimal("-350") and parsed.rows[2][4] == datetime(2025, 1, 2)
+
+
+@pytest.mark.parametrize("value, number", [
+    ("1,234,567.5", "1234567.5"), ("12,34,567", "1234567"), ("-$5", "-5"), ("$-5", "-5"), ("5 USD", "5"),
+    ("€ 9.99", "9.99"), ("+7", "7"), ("(1,000)", "-1000"),
+    ("1,23", None), ("1.234,5", None), ("12%", None), ("(-5)", None), ("$", None), ("()", None), ("-", None),
+    ("1,2345", None), ("abc", None),
+])
+def test_money_and_grouped_numbers(value, number):
+    assert csv_import._number_text(value) == number
+
+
+def test_month_first_dates_and_whole_numbers():
+    parsed = parse_csv(b"day,qty\n12/31/2024,\"1,500\"\n01/02/2025,7\n",
+                       [{"name": "day", "type": "date_mdy"}, {"name": "qty", "type": "integer"}])
+    assert [row for row in parsed.rows] == [[date(2024, 12, 31), 1500], [date(2025, 1, 2), 7]]
+
+
+@pytest.mark.parametrize("overrides, message", [
+    ([{"name": "a", "type": "text"}], "don't match"),
+    ([{"name": "a", "type": "text"}, {"name": "b", "type": "money"}], "don't match"),
+    ([{"name": "a", "type": "text"}, "b"], "don't match"),
+    ("not a list", "don't match"),
+    ([{"name": "a", "type": "text"}, {"name": "Bad Name", "type": "text"}], "isn't a valid column name"),
+    ([{"name": "a", "type": "text"}, {"name": "1st", "type": "text"}], "isn't a valid column name"),
+    ([{"name": "a", "type": "text"}, {"name": "x\"; DROP TABLE t; --", "type": "text"}], "isn't a valid column name"),
+    ([{"name": "a", "type": "text"}, {"name": "select", "type": "text"}], "reserved"),
+    ([{"name": "a", "type": "text"}, {"name": "a", "type": "text"}], "unique"),
+    ([{"name": "a", "type": "text"}, {"name": "b", "type": "integer"}], "line 3"),
+])
+def test_bad_overrides_are_rejected_clearly(overrides, message):
+    with pytest.raises(CsvImportError, match=message):
+        parse_csv(b"a,b\nx,12\ny,1.5\n", overrides)
+
+
+def test_a_value_that_does_not_fit_names_the_column_and_line():
+    with pytest.raises(CsvImportError) as error:
+        parse_csv(b"happened\n2025-01-01\n31/12/2024\n", [{"name": "happened", "type": "date"}])
+    assert str(error.value) == ("Column 'happened': the value '31/12/2024' on line 3 can't be read as a date "
+                                "(YYYY-MM-DD). Choose another type, or fix the file.")
+
+
+def test_impossible_dates_and_times_do_not_fit():
+    preview = csv_import.preview_csv(b"d,t\n31/02/2025,2025-01-01 25:00\n")
+    assert [column["choices"] for column in preview["columns"]] == [["text"], ["text"]]

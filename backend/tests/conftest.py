@@ -10,6 +10,7 @@ throw away (setup creates tables, demo data and the reader role there):
 CSV-upload tests also need TEST_INGEST_DATABASE_URL.
 """
 import os
+import re
 
 import pytest
 
@@ -49,3 +50,20 @@ def client(database):
 def uploads(database):
     if not TEST_INGEST_DATABASE_URL:
         pytest.skip("set TEST_INGEST_DATABASE_URL to run CSV-upload tests")
+
+
+@pytest.fixture
+def model(monkeypatch):
+    """AI mode with a stand-in model: each question maps to SQL, with {table} replaced by the first table in the
+    schema it is shown. Everything after the model (validation, isolation, read-only execution) is real."""
+    from app import generator
+    monkeypatch.setattr(generator.settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(generator.settings, "llm_model", "test-model")
+    answers = {}
+
+    def reply(question, schema_context):
+        table = re.match(r"(\w+)\(", schema_context).group(1)
+        return answers[question].format(table=table), "llm", "Stand-in model"
+
+    monkeypatch.setattr(generator, "_llm_sql", reply)
+    return answers

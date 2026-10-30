@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import uuid
@@ -13,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
-from .csv_import import CsvImportError, display_name, parse_csv
+from .csv_import import CsvImportError, display_name, parse_csv, preview_csv
 from .database import DatabaseBusyError, execute_read_query, get_engine, verify_query_role
 from .datasets import (UPLOADS_SCHEMA, DatasetNotFound, UploadsFull, cleanup_expired, create_dataset, delete_dataset,
                        ensure_registry, get_dataset, schema_text, uploads_enabled, verify_ingest_role)
@@ -22,6 +23,7 @@ from .generator import LLMError, generate_sql, llm_enabled
 from .limits import RateLimiter
 from .rules import SAMPLE_QUESTIONS, UnsupportedQuestionError
 from .safety import UnsafeQueryError, validate_read_query
+from . import sources
 from .schema_info import describe_schema, get_definitions, get_table_row_counts, get_tables
 from .schemas import QueryRequest
 from .seed import DATASET_INFO
@@ -32,6 +34,7 @@ logger = logging.getLogger("datatalk")
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 _rate_limiter = RateLimiter(settings.rate_limit_per_minute)
 _upload_limiter = RateLimiter(settings.upload_rate_limit_per_minute)
+_preview_limiter = RateLimiter(settings.upload_rate_limit_per_minute)
 _UPLOAD_SUFFIXES = (".csv", ".tsv", ".txt")
 
 
@@ -42,12 +45,14 @@ async def lifespan(_: FastAPI):
         verify_ingest_role()
         ensure_registry()
         logger.info("uploads enabled; removed %d expired datasets", cleanup_expired())
+    for source in sources.configured().values():
+        sources.tables_of(source)  # logs whether each configured database is ready, refused or unreachable
     yield
 
 
 app = FastAPI(title="DataTalk API", version="1.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
-                   allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "X-Dataset-Token"],
+                   allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "X-Dataset-Token", "X-Dataset-Columns", "X-Source-Key"],
                    expose_headers=["X-Request-ID"])
 
 
@@ -97,7 +102,8 @@ def schema():
             "mode": "ai" if llm_enabled() else "demo",
             "uploads": {"enabled": uploads_enabled(), "max_bytes": settings.upload_max_bytes,
                         "max_rows": settings.upload_max_rows, "max_columns": settings.upload_max_columns,
-                        "ttl_hours": settings.dataset_ttl_hours}}
+                        "ttl_hours": settings.dataset_ttl_hours},
+            "sources": [sources.public_info(source, sources.tables_of(source)) for source in sources.available()]}
 
 
 def _require_dataset(dataset_id: str, token: str) -> dict:
@@ -109,13 +115,32 @@ def _require_dataset(dataset_id: str, token: str) -> dict:
         raise HTTPException(status_code=404, detail="Dataset not found. It may have expired or been deleted.") from exc
 
 
-@app.post("/api/datasets", status_code=201)
-async def upload_dataset(request: Request, name: str = Query(default="", max_length=200)):
-    """Upload a CSV as the raw request body. Returns the dataset and its secret access token (shown once)."""
+def _require_source(source_id: str, key: str) -> tuple[sources.Source, list[dict]]:
+    try:
+        return sources.require(source_id, key)
+    except sources.SourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="That database is not available right now.") from exc
+    except sources.SourceKeyRequired as exc:
+        raise HTTPException(status_code=403, detail="This database needs its access key. Check the key and try "
+                                                    "again.") from exc
+
+
+@app.get("/api/sources/{source_id}")
+def source_info(source_id: str, request: Request, x_source_key: str = Header(default="", max_length=200)):
+    """A configured database's tables. Also how the app checks an access key before asking questions."""
+    client = request.client.host if request.client else "unknown"
+    if not _rate_limiter.allow(client):
+        raise HTTPException(status_code=429, detail="Too many requests in a short time. Please wait a minute.")
+    source, tables = _require_source(source_id, x_source_key)
+    return sources.public_info(source, tables, unlocked=True)
+
+
+async def _read_upload(request: Request, name: str, limiter: RateLimiter) -> bytes:
+    """The raw CSV body, after the enabled, rate, file-type and size checks shared by preview and import."""
     if not uploads_enabled():
         raise HTTPException(status_code=404, detail="CSV uploads are not enabled on this server.")
     client = request.client.host if request.client else "unknown"
-    if not _upload_limiter.allow(client):
+    if not limiter.allow(client):
         raise HTTPException(status_code=429, detail="Too many uploads in a short time. Please wait a minute.")
     if name and not name.lower().endswith(_UPLOAD_SUFFIXES):
         raise HTTPException(status_code=400, detail="Please upload a .csv file.")
@@ -128,8 +153,38 @@ async def upload_dataset(request: Request, name: str = Query(default="", max_len
         body.extend(chunk)
         if len(body) > settings.upload_max_bytes:
             raise HTTPException(status_code=413, detail=too_big)
+    return bytes(body)
+
+
+@app.post("/api/datasets/preview")
+async def preview_dataset(request: Request, name: str = Query(default="", max_length=200)):
+    """Check a CSV without storing anything: the columns found, the types each column could be read as, and a few
+    example values, so names and types can be corrected before importing."""
+    body = await _read_upload(request, name, _preview_limiter)
     try:
-        parsed = await run_in_threadpool(parse_csv, bytes(body))
+        preview = await run_in_threadpool(preview_csv, body)
+    except CsvImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"name": display_name(name), **preview}
+
+
+@app.post("/api/datasets", status_code=201)
+async def upload_dataset(request: Request, name: str = Query(default="", max_length=200),
+                         x_dataset_columns: str = Header(default="", max_length=8000)):
+    """Upload a CSV as the raw request body. Returns the dataset and its secret access token (shown once).
+
+    X-Dataset-Columns optionally carries the reviewed columns: a JSON list with one {"name", "type"} per column,
+    where type is one of the choices the preview offered.
+    """
+    body = await _read_upload(request, name, _upload_limiter)
+    overrides = None
+    if x_dataset_columns:
+        try:
+            overrides = json.loads(x_dataset_columns)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="The column settings could not be read.") from exc
+    try:
+        parsed = await run_in_threadpool(parse_csv, body, overrides)
         dataset = await run_in_threadpool(create_dataset, parsed, display_name(name))
     except CsvImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -164,22 +219,31 @@ def remove_dataset(dataset_id: str, x_dataset_token: str = Header(default="")):
 
 
 @app.post("/api/query")
-def query(payload: QueryRequest, request: Request, x_dataset_token: str = Header(default="")):
+def query(payload: QueryRequest, request: Request, x_dataset_token: str = Header(default=""),
+          x_source_key: str = Header(default="", max_length=200)):
     request_id = request.state.request_id
     client = request.client.host if request.client else "unknown"
     if not _rate_limiter.allow(client):
         raise HTTPException(status_code=429, detail="Too many questions in a short time. Please wait a minute.")
+    if payload.dataset_id and payload.source_id:
+        raise HTTPException(status_code=422, detail="Ask about one source at a time: a file or a database.")
 
     limit = min(payload.max_rows, settings.max_result_rows)
-    # An uploaded dataset is only reachable with its token, and its questions may only touch its one table.
-    dataset = _require_dataset(payload.dataset_id, x_dataset_token) if payload.dataset_id else None
+    # An uploaded dataset is only reachable with its token, a connected database with its key (if it has one), and
+    # questions about either may only touch that source's own tables, found through its own schema.
+    if payload.dataset_id:
+        dataset = _require_dataset(payload.dataset_id, x_dataset_token)
+        kind, name, context, allowed = "upload", dataset["name"], schema_text(dataset), [dataset["table_name"]]
+        search_path, engine = UPLOADS_SCHEMA, None
+    elif payload.source_id:
+        source, tables = _require_source(payload.source_id, x_source_key)
+        kind, name, context, allowed = "database", source.label, sources.schema_text(tables), [t["name"] for t in tables]
+        search_path, engine = source.schema, source.engine
+    else:
+        kind, name, context, allowed = "demo", None, describe_schema("basic"), [t["name"] for t in get_tables()]
+        search_path, engine = None, None
     try:
-        if dataset:
-            candidate, generator, explanation = generate_sql(payload.question, schema_text(dataset), allow_rules=False)
-            allowed = [dataset["table_name"]]
-        else:
-            candidate, generator, explanation = generate_sql(payload.question, describe_schema("basic"))
-            allowed = [table["name"] for table in get_tables()]
+        candidate, generator, explanation = generate_sql(payload.question, context, allow_rules=kind == "demo")
         # Fetch one extra row so truncation is reported accurately.
         sql = validate_read_query(candidate, allowed, limit + 1)
     except UnsupportedQuestionError as exc:
@@ -192,7 +256,7 @@ def query(payload: QueryRequest, request: Request, x_dataset_token: str = Header
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     try:
-        raw_rows = execute_read_query(sql, search_path=UPLOADS_SCHEMA if dataset else None)
+        raw_rows = execute_read_query(sql, search_path=search_path, engine=engine)
     except DatabaseBusyError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
@@ -201,8 +265,8 @@ def query(payload: QueryRequest, request: Request, x_dataset_token: str = Header
         raise HTTPException(status_code=status, detail=f"{message} (reference {request_id})") from exc
 
     rows = [{key: _json_value(value) for key, value in row.items()} for row in raw_rows[:limit]]
-    logger.info("query ok request_id=%s generator=%s source=%s rows=%d", request_id, generator,
-                f"dataset:{dataset['id']}" if dataset else "demo", len(rows))
+    origin = {"upload": f"dataset:{payload.dataset_id}", "database": f"database:{payload.source_id}"}.get(kind, kind)
+    logger.info("query ok request_id=%s generator=%s source=%s rows=%d", request_id, generator, origin, len(rows))
     return {"question": payload.question, "sql": sql, "rows": rows, "row_count": len(rows),
             "truncated": len(raw_rows) > limit, "generator": generator, "explanation": explanation,
-            "source": "upload" if dataset else "demo", "dataset_name": dataset["name"] if dataset else None}
+            "source": kind, "dataset_name": name}

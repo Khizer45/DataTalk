@@ -3,12 +3,13 @@
 Questions about uploads need AI mode, so a stand-in model returns SQL for the table it is shown. Everything after
 the model (validation, search_path isolation, read-only execution) is the real pipeline.
 """
+import json
 import re
 
 import pytest
 from sqlalchemy import text
 
-from app import generator, main
+from app import main
 from app.datasets import get_ingest_engine
 from app.limits import RateLimiter
 
@@ -24,21 +25,6 @@ def upload(client, data, name="data.csv"):
 def ask(client, dataset, question, token=None):
     return client.post("/api/query", json={"question": question, "dataset_id": dataset["id"]},
                        headers={"X-Dataset-Token": dataset["access_token"] if token is None else token})
-
-
-@pytest.fixture
-def model(monkeypatch):
-    """AI mode with a stand-in model: each question maps to SQL built from the table name in the schema."""
-    monkeypatch.setattr(generator.settings, "llm_api_key", "test-key")
-    monkeypatch.setattr(generator.settings, "llm_model", "test-model")
-    answers = {}
-
-    def reply(question, schema_context):
-        table = re.match(r"(\w+)\(", schema_context).group(1)
-        return answers[question].format(table=table), "llm", "Stand-in model"
-
-    monkeypatch.setattr(generator, "_llm_sql", reply)
-    return answers
 
 
 def test_upload_returns_inferred_schema_and_a_token(client, uploads):
@@ -172,3 +158,56 @@ def test_schema_reports_upload_limits_and_demo_still_works(client, uploads):
 def test_dataset_id_format_is_validated(client, uploads):
     response = client.post("/api/query", json={"question": "Anything?", "dataset_id": "../../etc"})
     assert response.status_code == 422
+
+
+PRICES = (b"Item,Price,Sold On\nTea,\"Rs 1,200\",03/04/2025\nRice,\"Rs 12,50,000\",28/02/2025\n"
+          b"Salt,(50),01/12/2024\n")
+
+
+def registry_count():
+    with get_ingest_engine().connect() as connection:
+        return connection.execute(text("SELECT count(*) FROM uploads.dataset_registry")).scalar()
+
+
+def test_preview_checks_a_file_without_storing_it(client, uploads):
+    before = registry_count()
+    response = client.post("/api/datasets/preview?name=prices.csv", content=PRICES,
+                           headers={"Content-Type": "text/csv"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "prices.csv" and body["row_count"] == 3 and "access_token" not in body
+    columns = {column["label"]: column for column in body["columns"]}
+    assert columns["Price"]["type"] == "text" and columns["Price"]["choices"] == ["text", "integer", "decimal"]
+    assert columns["Sold On"]["choices"] == ["text", "date_dmy"]
+    assert registry_count() == before
+    bad = client.post("/api/datasets/preview?name=bad.csv", content=b"a,a\n1,2\n", headers={"Content-Type": "text/csv"})
+    assert bad.status_code == 400 and "unique" in bad.json()["detail"]
+
+
+def test_reviewed_columns_are_imported_with_their_types(client, uploads, model):
+    columns = [{"name": "item", "type": "text"}, {"name": "price_pkr", "type": "decimal"},
+               {"name": "sold_on", "type": "date_dmy"}]
+    response = client.post("/api/datasets?name=prices.csv", content=PRICES,
+                           headers={"Content-Type": "text/csv", "X-Dataset-Columns": json.dumps(columns)})
+    assert response.status_code == 201
+    dataset = response.json()
+    assert [(c["name"], c["label"], c["type"]) for c in dataset["columns"]] == [
+        ("item", "Item", "text"), ("price_pkr", "Price", "decimal"), ("sold_on", "Sold On", "date")]
+    model["Total and first sale?"] = "SELECT SUM(price_pkr) AS total, MIN(sold_on) AS first FROM {table}"
+    assert ask(client, dataset, "Total and first sale?").json()["rows"] == [{"total": 1251150.0, "first": "2024-12-01"}]
+
+
+@pytest.mark.parametrize("header, message", [
+    ("{not json", "could not be read"),
+    (json.dumps([{"name": "item", "type": "text"}]), "don't match"),
+    (json.dumps([{"name": "item", "type": "text"}, {"name": "price", "type": "boolean"},
+                 {"name": "sold_on", "type": "date_dmy"}]), "line 2"),
+    (json.dumps([{"name": "item", "type": "text"}, {"name": "price\"); DROP TABLE x; --", "type": "text"},
+                 {"name": "sold_on", "type": "text"}]), "valid column name"),
+])
+def test_bad_column_settings_are_rejected_and_nothing_is_stored(client, uploads, header, message):
+    before = registry_count()
+    response = client.post("/api/datasets?name=prices.csv", content=PRICES,
+                           headers={"Content-Type": "text/csv", "X-Dataset-Columns": header})
+    assert response.status_code == 400 and message in response.json()["detail"]
+    assert registry_count() == before
