@@ -13,6 +13,7 @@ limits. It is not a certification; the project has no user accounts and is meant
   files, or runs for a long time.
 - A hostile CSV: malicious filenames, headers or cell values; huge or malformed files.
 - One visitor reaching another visitor's uploaded dataset.
+- A connected database being changed, or read beyond the tables its operator meant to expose.
 - Abuse of a public deployment: request floods, storage filling, AI cost.
 - Leaks through error messages and logs.
 
@@ -23,6 +24,7 @@ limits. It is not a certification; the project has no user accounts and is meant
 | Owner | `python -m app.setup_db` only | Create tables, roles, schema | Is never given to the API |
 | Reader (`DATABASE_URL`) | Every question | `SELECT` on the demo tables and on each uploaded table | Write anything: `default_transaction_read_only = on`; statement, lock and idle timeouts are set on the role |
 | Ingest (`INGEST_DATABASE_URL`, optional) | CSV import and the dataset registry | Create, fill and drop tables in the `uploads` schema | Read the demo tables; create objects in `public` |
+| Source role (`SOURCE_<ID>_URL`, optional, one per connected database) | Questions about that database | `SELECT` on the tables its operator granted | Anything DataTalk's checks refuse: see "Databases configured on the server" |
 
 The API refuses to start if the reader is a superuser or not read-only, and refuses to enable uploads if the
 ingest role is a superuser or can read the demo tables (`verify_query_role`, `verify_ingest_role`).
@@ -59,6 +61,11 @@ Evidence: `tests/test_safety.py`.
   suffix) and are always quoted with psycopg's identifier quoting. Table names are random (`t_` + 20 hex).
 - **Values:** loaded with `COPY` as data, never as SQL text. Types are inferred cautiously; anything doubtful
   (leading zeros, non-ISO dates, thousands separators) stays text.
+- **Reviewing columns:** a preview parses the file and stores nothing. Reviewed names come back as a header and are
+  validated against `^[a-z][a-z0-9_]{0,62}$`, the reserved-word list and each other — rejected, not cleaned up — and
+  types must be one of a fixed list. A value that does not fit the chosen type stops the import with the column and
+  line named. Lenient readers (currency signs, grouped digits, day/month order) only produce numbers and dates; the
+  values still go in through `COPY`.
 - **All-or-nothing import:** table creation, data load, grant and registry entry happen in one transaction, so a
   failure leaves no table and no registry row.
 - **Ownership:** an upload returns a public dataset id and a secret token. Only a SHA-256 hash of the token is
@@ -101,13 +108,33 @@ demo-table access refused, writes refused, hostile content stored as plain data,
   confidential data (the upload page says so).
 - AI-mode accuracy has not been measured; wrong-but-valid SQL is possible. Users should read "View the SQL that ran".
 
-## Connecting an existing PostgreSQL database
+## Databases configured on the server (`backend/app/sources.py`)
 
-Not implemented. Accepting connection strings from browsers would let a public deployment be used to reach
-internal networks (SSRF) and would require storing other people's credentials. A safe version needs: an allowlist
-of destinations, TLS verification, a user-created read-only role with minimal grants, connection and statement
-timeouts, secrets kept server-side and never logged, and real user authentication. Until then, self-hosted users
-can point `DATABASE_URL` at their own database with a read-only role (see the README).
+Visitors cannot type a connection string: on a public site that would let anyone use the server to reach other
+machines (SSRF) and would mean holding other people's passwords. Instead, whoever runs DataTalk lists databases in
+environment variables (`DATA_SOURCES`, `SOURCE_<ID>_URL`, ...). For each one:
+
+- **Role checks before it is offered**, repeated whenever its table list refreshes (every 5 minutes): the role must
+  not be a superuser, must not be able to create roles or databases or replicate, must be read-only by default
+  (`default_transaction_read_only = on`), must not belong to `pg_read_server_files`, `pg_write_server_files`,
+  `pg_execute_server_program` or `pg_write_all_data`, and must not be able to create objects in, or insert, update,
+  delete or truncate any table in, the chosen schema. A database that fails is not offered; the reason is logged.
+- **Scope:** questions see only the tables that role can `SELECT` in one schema (plain lowercase names, optional
+  allowlist). The validator allows only those tables and no schema-qualified names, and the query runs with
+  `search_path` set to that schema, read-only, with the statement timeout.
+- **Access key (optional):** `SOURCE_<ID>_ACCESS_KEY`, sent as `X-Source-Key` and compared in constant time. The
+  table list is hidden until the key is given. The browser keeps the key for the current tab only (sessionStorage).
+- **Secrets:** connection URLs are read from the environment and never returned or logged; only the source id,
+  label and table names are shown.
+
+Evidence: `tests/test_sources_postgres.py` (refused writer, not-read-only, superuser and missing-schema roles; tables
+outside the grants, other schemas, demo tables, catalog tables, writes and server-file functions all rejected;
+access key required; passwords absent from the log).
+
+Limits: without an access key, anyone who can open the deployment can query a connected database; the access key is
+a shared secret, not per-user authentication; network-level protection (TLS with `sslmode=verify-full`, firewalls)
+is the operator's responsibility; catalog tables such as `pg_roles` stay readable by name at the database level, so
+the table allowlist in the validator is what keeps them out of answers.
 
 ## Reporting a problem
 

@@ -83,9 +83,47 @@ questions about that specific dataset through the same validated, read-only pipe
 - Two different CSV schemas (regional sales; semicolon-separated expenses) answered from their own contents in
   AI mode with a stand-in model; real-model accuracy on uploads is **not measured**.
 
+## Milestone: column review and connected databases
+
+Goal: fix wrongly inferred columns before import, and let whoever runs DataTalk connect their own PostgreSQL
+databases safely, without letting visitors supply connection strings.
+
+### Design
+
+- **Preview, then import.** `POST /api/datasets/preview` parses the file and stores nothing. For each column it returns
+  the inferred type, every type all values fit (`choices`), and example values. The import repeats the parse with the
+  reviewed `[{"name", "type"}]` from `X-Dataset-Columns`; the server validates everything again.
+- **Strict inference, lenient choices.** Inference is unchanged. When the uploader picks a type, lenient readers accept
+  currency signs and codes, thousands and lakh grouping, accounting negatives, day-first or month-first dates and
+  yes/no booleans. A comma is never a decimal point.
+- **Server-configured sources.** `DATA_SOURCES` plus `SOURCE_<ID>_*` variables. Role checks (see SECURITY.md) before a
+  source is offered and on every refresh; tables from the catalog limited to what the role can read in one schema;
+  same validator, `search_path` pinned, read-only execution on the source's own engine; optional access key.
+
+### Status
+
+- [x] Preview endpoint, choices, lenient readers, reviewed import — `csv_import.py`, `main.py`; 52 unit tests in
+  `test_csv_import.py` (32 new) and 6 new PostgreSQL tests.
+- [x] Sources: config, role checks, table discovery, access key, query wiring — `sources.py`; 16 PostgreSQL tests in
+  `test_sources_postgres.py`, including refused roles and bypass attempts.
+- [x] Frontend: review step (stacked on phones), databases in the picker and on Your data, key form; plain number
+  formatting for user data (it was showing every "price" column in dollars). 7 new unit tests.
+- [x] Browser-checked with a stand-in model: reviewed `prices.csv` (Rs amounts, DD/MM/YYYY dates) imported as
+  decimal and date and summed correctly; a connected `helpdesk` database answered; an ungranted table refused; a
+  locked copy refused a wrong key and answered with the right one; demo still works.
+
+### Verified results (this milestone)
+
+- Backend: 165 tests pass with uploads enabled; 142 pass + 23 skipped without the ingest role; 109 pass + 56 skipped
+  without a database.
+- Frontend: 24 unit tests pass; production build succeeds.
+- Demo-mode evaluation unchanged: 12% answered, 0% wrong answers shown, 100% correct declines.
+- Removing the role checks or the SQL validator makes the source tests fail (checked by temporarily disabling each).
+- Worst-case preview time at the default 5 MB limit (50 columns, every value distinct): about 2.8 s; import about
+  2.2 s (run in a worker thread).
+
 ### Remaining for user data
 
-- Let users correct inferred column names/types before import (currently review-only).
 - Measure AI-mode accuracy on uploaded files (needs an API key and an upload evaluation set).
 - A per-dataset database role would add a database-level layer between uploads (see SECURITY.md).
 - Scheduled cleanup instead of cleanup on upload/start.
@@ -93,5 +131,6 @@ questions about that specific dataset through the same validated, read-only pipe
 ## Deferred (not in this milestone)
 
 - Structured AI replies, bounded retry, clarifying questions (items 6–7; blocked this session).
-- Connecting an existing PostgreSQL database (needs its own credential/SSRF/TLS design).
+- Visitors connecting their own database from the browser (needs user accounts, encrypted credential storage,
+  destination allowlists and TLS verification; server-configured sources cover the self-hosted case).
 - User accounts, saved analyses persistence, MCP mode, local models, AWS specifics.
