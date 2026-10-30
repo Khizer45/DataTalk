@@ -5,7 +5,7 @@ DataTalk is an open-source, safety-focused text-to-SQL application. You ask ques
 It runs in two modes:
 
 - **Demo mode** (no AI key): answers a small set of question types about the demo shop, phrased like the suggested questions. It is deliberately strict: if it does not fully recognise a question it says so instead of guessing. Uploaded files can be inspected, but questions about them need AI mode.
-- **AI mode** (set `LLM_API_KEY` and `LLM_MODEL`): an OpenAI-compatible model writes the SQL, for the demo data, your uploaded file or a connected database. Everything the model writes still goes through the same checks.
+- **AI mode** (set `LLM_API_KEY` and `LLM_MODEL`): an OpenAI-compatible model writes the SQL, for the demo data, your uploaded file or a connected database. It replies in a fixed JSON format: the SQL with a one-line explanation and the assumptions it made, or, when your question can be read in more than one way, a clarifying question with options to choose from. Everything the model writes still goes through the same checks.
 
 ## How a question is answered
 
@@ -13,6 +13,8 @@ It runs in two modes:
 CSV upload → file checks + type inference → you review names and types → private table in 'uploads' (expires)
 database   → configured on the server → read-only role checked → its readable tables in one schema
 question   → SQL (AI model or demo rules) → validator (SQLGlot) → read-only PostgreSQL role → table + chart
+AI reply   → strict JSON check → SQL + explanation + assumptions, or a clarifying question (nothing runs)
+             malformed reply, fixable rejection, unknown column or table → model asked once more (never for a write)
 ```
 
 ## Feature status
@@ -25,9 +27,11 @@ question   → SQL (AI model or demo rules) → validator (SQLGlot) → read-onl
 | Results: sortable table, bar chart (when it helps), single-value display, "View the SQL that ran", CSV download of the rows shown | Implemented |
 | Dataset page: tables, columns, row counts, column meanings, table links, definitions | Implemented |
 | Business context file: column meanings, glossary, verified example queries (`backend/app/business_context.json`) | Implemented; shown on the Dataset page, not yet sent to the AI model |
-| Rate limit, concurrency cap, daily cap on AI answers | Implemented |
+| Rate limit, concurrency cap, daily cap on AI model calls (a retry counts) | Implemented |
 | Evaluation set (62 questions) and runner | Implemented; AI mode not yet measured |
-| Richer AI prompt (types, keys, glossary, examples), structured AI replies with retry, clarifying questions | Planned |
+| Structured AI replies (strict JSON), one bounded retry for fixable problems | Implemented; tested with a stand-in model, not yet measured with a real one |
+| Clarifying questions with options to choose from; the model's assumptions shown under the results | Implemented (AI mode) |
+| Richer AI prompt (types, keys, glossary, examples) | Planned |
 | CSV upload: file checks, type inference, private expiring tables, delete | Implemented |
 | Review columns before import: rename, change type, read "$1,200", "Rs 1,20,000" or 03/04/2025 correctly | Implemented |
 | Questions about uploaded files | Implemented in AI mode (demo-mode rules only know the demo shop) |
@@ -99,10 +103,11 @@ Safety does not depend on the AI model behaving well. Each layer works on its ow
 1. **Database roles.** Queries run as a reader role that can only `SELECT`. PostgreSQL itself enforces read-only mode and statement, lock and idle timeouts for that role. The API refuses to start if its role is a superuser or can write. An optional third role imports CSV uploads and can only write to the `uploads` schema; it cannot read the demo tables.
 2. **Validator.** SQLGlot parses the SQL. Only one `SELECT` is accepted, only on the exposed tables, using only allowlisted functions. A row cap is added without loosening a smaller `LIMIT`.
 3. **Execution.** Each query runs in a read-only transaction that is always rolled back.
-4. **API.** Per-client rate limit, a cap on concurrent queries, and a daily cap on AI answers. Users see plain error messages with a reference ID; details stay in the server log.
-5. **Privacy.** Only table and column names are sent to the AI model, never row data.
-6. **Uploads.** Files are size-, row- and column-limited and parsed strictly; headers become safe, quoted column names; reviewed names are validated, not trusted; values are loaded as data; import is all-or-nothing; each file gets a random private table reachable only with its secret token, and questions about it can only touch that one table.
-7. **Connected databases.** Configured on the server only; their role is checked before they are offered and again on every refresh; questions are limited to that database's readable tables in one schema; an optional access key is compared in constant time.
+4. **API.** Per-client rate limit, a cap on concurrent queries, and a daily cap on AI model calls. Users see plain error messages with a reference ID; details stay in the server log.
+5. **Privacy.** Only table and column names (and today's date) are sent to the AI model, never row data. When it is asked again, it also gets the validator's message, or PostgreSQL's message and hint for an unknown column or table, which name columns and tables only.
+6. **AI replies.** The model must reply with one of two JSON forms, read strictly. A malformed reply, SQL the validator rejects as fixable, or an unknown column or table gets one retry, checked like any query; a write attempt is never retried, and every model call counts against the daily cap. A clarifying question runs nothing; the option you choose is asked as a new question.
+7. **Uploads.** Files are size-, row- and column-limited and parsed strictly; headers become safe, quoted column names; reviewed names are validated, not trusted; values are loaded as data; import is all-or-nothing; each file gets a random private table reachable only with its secret token, and questions about it can only touch that one table.
+8. **Connected databases.** Configured on the server only; their role is checked before they are offered and again on every refresh; questions are limited to that database's readable tables in one schema; an optional access key is compared in constant time.
 
 Full details, the tests behind each safeguard, and the known limits: [docs/SECURITY.md](docs/SECURITY.md). Work in progress and next steps: [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
 
@@ -129,6 +134,8 @@ Measured baseline (2026-10-27, `eval/results/2026-10-27-rules.json`):
 | AI mode | not measured yet | | |
 
 Demo mode answers few questions by design; the important number is that it shows no wrong answers. "Wrong answers shown" counts results that look like answers but are wrong, which users cannot easily spot. Keep the evaluation questions out of any prompt examples, or the scores stop meaning anything.
+
+Questions go through the same pipeline as the app, including the one retry. In AI mode a clarifying question counts as declining: right for the ambiguous questions, a miss (but never a wrong answer) for answerable ones, reported as "asked to clarify". The report records every model call with the SQL it wrote and why it was not used, so you can see how often the retry was needed. AI mode has not been measured yet: it needs an API key, and no real-model run has been done.
 
 ## Run with Docker
 
@@ -238,7 +245,7 @@ Free tiers sleep when idle; the page shows a "waking up" notice while the API st
 | `EXPOSED_TABLES` | the four demo tables | Tables the reader may query and the model may see |
 | `BUSINESS_CONTEXT_PATH` | `backend/app/business_context.json` | Table and column meanings, glossary and verified examples |
 | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | OpenAI base URL, empty, empty | AI mode settings |
-| `LLM_DAILY_LIMIT` | `200` | AI answers per UTC day before falling back to demo mode (`0` = no cap) |
+| `LLM_DAILY_LIMIT` | `200` | AI model calls per UTC day, retries included, before falling back to demo mode (`0` = no cap) |
 | `MAX_RESULT_ROWS` | `200` | Maximum rows returned per question |
 | `STATEMENT_TIMEOUT_MS` | `5000` | Query time limit |
 | `CORS_ORIGINS` | localhost:5173 | Frontend origins allowed to call the API |
@@ -260,7 +267,7 @@ Free tiers sleep when idle; the page shows a "waking up" notice while the API st
 | --- | --- | --- |
 | `GET` | `/api/health` | Service and database status |
 | `GET` | `/api/schema` | Tables with columns, keys, links, meanings and row counts; dataset description and definitions; sample questions; mode (`demo` or `ai`); upload limits; connected databases (tables hidden for those with an access key) |
-| `POST` | `/api/query` | Generate, validate and run a read-only query. Optional `dataset_id` (with its token in `X-Dataset-Token`) asks about an uploaded file; optional `source_id` (with `X-Source-Key` if needed) asks about a connected database |
+| `POST` | `/api/query` | Generate, validate and run a read-only query; the answer lists the model's `assumptions` (AI mode). When the model needs to know which reading of the question was meant, returns 200 with a `clarification` instead and runs nothing. Optional `dataset_id` (with its token in `X-Dataset-Token`) asks about an uploaded file; optional `source_id` (with `X-Source-Key` if needed) asks about a connected database |
 | `GET` | `/api/sources/{id}` | A connected database's tables (needs `X-Source-Key` if it has an access key) |
 | `POST` | `/api/datasets/preview?name=<file name>` | Check a CSV (raw body) without storing it: columns, inferred types, the types each column could be read as, example values |
 | `POST` | `/api/datasets?name=<file name>` | Upload a CSV as the raw request body; optional `X-Dataset-Columns` header with the reviewed `[{"name", "type"}, ...]`; returns the dataset, its columns and its secret `access_token` (shown once) |
@@ -277,10 +284,26 @@ POST /api/query
 }
 ```
 
+The response has the `sql` that ran, `rows`, `row_count`, `truncated`, `generator` (`llm` or `rules`), `explanation`, `assumptions` (AI mode; empty in demo mode), `clarification` (`null` for an answer), `source` and `dataset_name`. A clarification in AI mode looks like this, with `sql` empty and no rows:
+
+```json
+{
+  "question": "Who are our top customers?",
+  "clarification": {
+    "question": "Should customers be ranked by revenue or by number of orders?",
+    "options": ["Who are the top 5 customers by revenue?", "Who are the top 5 customers by number of orders?"]
+  },
+  "sql": null, "rows": [], "row_count": 0, "assumptions": [], "generator": "llm", "source": "demo"
+}
+```
+
+Each option is a complete question: send it as the next `question` (about the same data) to get the answer.
+
 ## Known limitations
 
 - No authentication; public deployments rely on rate limits and the daily AI cap.
-- AI mode accuracy has not been measured yet. The AI model still receives table and column names only; the business context is not yet part of its prompt, and it cannot ask clarifying questions.
+- AI mode accuracy has not been measured yet; structured replies, the retry and clarifying questions are tested with a stand-in model only. The AI model still receives table and column names only; the business context is not yet part of its prompt.
+- The explanation and assumptions are the model's own description of its SQL and are not checked against it; "View the SQL that ran" shows what actually ran. Whether the model asks for clarification when it should depends on the model.
 - Demo mode only answers a few phrasings by design.
 - Rate limits and the daily AI cap are in memory, per API instance.
 - Questions about uploaded files need AI mode, and AI-mode accuracy on uploaded files has not been measured.

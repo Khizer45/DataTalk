@@ -11,6 +11,7 @@ limits. It is not a certification; the project has no user accounts and is meant
 
 - A question (or a prompt-injected model) producing SQL that changes data, reads other tables, reads server
   files, or runs for a long time.
+- A malformed model reply, or the retry being used to turn a refused request into another query.
 - A hostile CSV: malicious filenames, headers or cell values; huge or malformed files.
 - One visitor reaching another visitor's uploaded dataset.
 - A connected database being changed, or read beyond the tables its operator meant to expose.
@@ -84,14 +85,37 @@ Evidence: `tests/test_safety.py` (including CTE shadowing cases), plus the CTE c
 Evidence: `tests/test_csv_import.py`, `tests/test_uploads_postgres.py` (two different schemas, cross-dataset and
 demo-table access refused, writes refused, hostile content stored as plain data, deletion and expiry).
 
-## The language model
+## The language model (`backend/app/generator.py`)
 
-- The model only receives table and column names (for uploads: the private table name and its column names),
-  never row data.
+- The model only receives table and column names (for uploads: the private table name and its column names) and
+  today's date, never row data. When it is asked again (below), it also gets its previous reply and the problem: the
+  validator's message, or PostgreSQL's message and hint for an unknown column or table (SQLSTATE 42703 / 42P01), which
+  name columns and tables only. Other database errors are never sent to the model, because their messages can quote
+  values (for example a failed cast).
 - Its output is validated as above before anything runs; a prompt is not treated as a security boundary.
+- **Strict replies.** The reply must be exactly one JSON object in one of two forms: `{"sql", "explanation",
+  "assumptions"}` or `{"clarification": {"question", "options"}}`. Unknown or missing keys, wrong types, repeated keys,
+  text outside the object (one surrounding markdown code fence is tolerated) and oversized values are refused.
+- **One bounded retry.** A malformed reply, an `UnsafeQueryError` marked `retryable`, or an unknown column or table
+  gets one more model call per question, at most. A write attempt (`retryable=False`) is never retried: asking again
+  could turn a request to change data into an unrelated SELECT that looks like an answer. Timeouts, type errors,
+  permission errors and failures to reach the model are not retried either. The retry's SQL goes through the same
+  validator, per-request table allowlist, `search_path` and read-only execution as the first try. A reply that is
+  still malformed ends with a clear error and nothing runs.
+- **Clarifying questions run nothing.** The question and its options are shown as plain text (React escapes them).
+  Choosing an option sends it as a new question (each must be 3–200 characters, a valid question), which goes through
+  the whole pipeline again. The server keeps no conversation state.
+- The explanation and stated assumptions are model-written text shown as plain text. They describe the SQL but are not
+  verified against it; "View the SQL that ran" shows what actually ran.
 - Questions about uploaded data never fall back to the demo rules, so a demo-table query cannot be produced for an
   upload.
-- `LLM_DAILY_LIMIT` caps AI answers per day (in memory); a provider-side spending limit is still recommended.
+- `LLM_DAILY_LIMIT` caps model calls per day, a retry included (in memory). If the cap is reached before a retry, the
+  first failure is reported instead. A provider-side spending limit is still recommended.
+
+Evidence: `tests/test_generator.py` (strict parsing, which failures are retried, at most one retry, writes never
+retried, the cap), `tests/test_ai_postgres.py` (clarifications run nothing; a retry that reaches `pg_roles`, a
+schema-qualified table, a write or a server-file function is refused before it runs), and the retry cases in
+`tests/test_uploads_postgres.py` and `tests/test_sources_postgres.py` (a retry cannot leave its upload or database).
 
 ## API
 
@@ -113,6 +137,7 @@ demo-table access refused, writes refused, hostile content stored as plain data,
 - Public deployments receive whatever visitors upload. Keep limits small and tell users not to upload personal or
   confidential data (the upload page says so).
 - AI-mode accuracy has not been measured; wrong-but-valid SQL is possible. Users should read "View the SQL that ran".
+  The model's explanation and stated assumptions can be wrong too: they are not checked against the SQL.
 
 ## Databases configured on the server (`backend/app/sources.py`)
 
