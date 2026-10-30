@@ -114,11 +114,16 @@ databases safely, without letting visitors supply connection strings.
 
 ### Verified results (this milestone)
 
-- Backend: 165 tests pass with uploads enabled; 142 pass + 23 skipped without the ingest role; 109 pass + 56 skipped
-  without a database.
+- Backend: 178 tests pass with uploads enabled (twice in a row); 155 pass + 23 skipped without the ingest role;
+  119 pass + 59 skipped without a database.
 - Frontend: 24 unit tests pass; production build succeeds.
 - Demo-mode evaluation unchanged: 12% answered, 0% wrong answers shown, 100% correct declines.
 - Removing the role checks or the SQL validator makes the source tests fail (checked by temporarily disabling each).
+- Security review of the branch found one real issue, in the existing validator: a CTE named after a table
+  (`WITH t AS (SELECT * FROM t)`) let that table through the allowlist, which could reach tables outside a
+  connected database's allowlist, `pg_catalog`, or another upload's table. Fixed with scope-aware checks; 10 new
+  validator tests and 5 PostgreSQL cases fail on the old validator and pass now. All 55 reference queries (evaluation
+  set and business-context examples) still pass the validator.
 - Worst-case preview time at the default 5 MB limit (50 columns, every value distinct): about 2.8 s; import about
   2.2 s (run in a worker thread).
 

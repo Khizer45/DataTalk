@@ -50,6 +50,14 @@ def client(database):
 def uploads(database):
     if not TEST_INGEST_DATABASE_URL:
         pytest.skip("set TEST_INGEST_DATABASE_URL to run CSV-upload tests")
+    # Start each test with no datasets, so repeated local runs never reach the storage cap.
+    from sqlalchemy import text
+
+    from app.datasets import cleanup_expired, ensure_registry, get_ingest_engine
+    ensure_registry()
+    with get_ingest_engine().begin() as connection:
+        connection.execute(text("UPDATE uploads.dataset_registry SET expires_at = now() - interval '1 second'"))
+    cleanup_expired()
 
 
 @pytest.fixture

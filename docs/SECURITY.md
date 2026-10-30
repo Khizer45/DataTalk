@@ -36,13 +36,19 @@ Evidence: `tests/test_api_postgres.py::test_query_role_is_read_only_and_not_a_su
 
 - SQL is parsed with SQLGlot (PostgreSQL dialect); exactly one statement is allowed.
 - Only read queries pass; data-changing and locking statements are rejected, including inside CTEs.
-- Every table must be in the allowed list **for that request** (the demo tables, or the one table of the
-  selected upload). Schema-qualified names are rejected.
+- Every table must be in the allowed list **for that request** (the demo tables, the one table of the selected
+  upload, or a connected database's tables). Schema-qualified names are rejected.
+- CTE names are resolved by scope, the way PostgreSQL resolves them: a non-recursive CTE cannot see itself, a CTE
+  inside a subquery is not visible outside it, and unquoted names are folded to lower case first. So
+  `WITH t AS (SELECT * FROM t)` still has to pass the allowlist for the real table `t`. A table that no scope
+  accounts for makes the query fail closed. (Found by a security review of this branch; before the fix, any CTE
+  name anywhere in a query let a table of the same name through.)
 - Only allowlisted functions are accepted (aggregates, maths, dates, strings, window functions...). Server
   functions for files, sessions, other databases or running SQL from strings are not on the list.
 - A row cap is added without loosening a smaller `LIMIT`.
 
-Evidence: `tests/test_safety.py`.
+Evidence: `tests/test_safety.py` (including CTE shadowing cases), plus the CTE cases in
+`tests/test_uploads_postgres.py` and `tests/test_sources_postgres.py`.
 
 ## Execution (`backend/app/database.py`)
 
@@ -120,7 +126,8 @@ environment variables (`DATA_SOURCES`, `SOURCE_<ID>_URL`, ...). For each one:
   `pg_execute_server_program` or `pg_write_all_data`, and must not be able to create objects in, or insert, update,
   delete or truncate any table in, the chosen schema. A database that fails is not offered; the reason is logged.
 - **Scope:** questions see only the tables that role can `SELECT` in one schema (plain lowercase names, optional
-  allowlist). The validator allows only those tables and no schema-qualified names, and the query runs with
+  allowlist). Grant the role only the tables you mean to expose: the grants are enforced by PostgreSQL, the
+  allowlist by DataTalk's validator. The validator allows only those tables and no schema-qualified names, and the query runs with
   `search_path` set to that schema, read-only, with the statement timeout.
 - **Access key (optional):** `SOURCE_<ID>_ACCESS_KEY`, sent as `X-Source-Key` and compared in constant time. The
   table list is hidden until the key is given. The browser keeps the key for the current tab only (sessionStorage).

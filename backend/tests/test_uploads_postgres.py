@@ -72,7 +72,10 @@ def test_a_dataset_cannot_reach_other_data(client, uploads, model):
     model["Other dataset?"] = "SELECT * FROM " + second_table
     model["Demo orders?"] = "SELECT count(*) FROM orders"
     model["Demo orders qualified?"] = "SELECT count(*) FROM public.orders"
-    for question in ("Other dataset?", "Demo orders?", "Demo orders qualified?"):
+    model["Other dataset via CTE?"] = f"WITH {second_table} AS (SELECT * FROM {second_table}) SELECT * FROM {second_table}"
+    model["Catalog via CTE?"] = "WITH pg_class AS (SELECT * FROM pg_class) SELECT relname FROM pg_class"
+    for question in ("Other dataset?", "Demo orders?", "Demo orders qualified?", "Other dataset via CTE?",
+                     "Catalog via CTE?"):
         assert ask(client, first, question).status_code == 400, question
     assert ask(client, second, "Other dataset?", token=first["access_token"]).status_code == 404
 

@@ -16,7 +16,7 @@ from tests.conftest import TEST_ADMIN_DATABASE_URL
 KEY = secrets.token_urlsafe(24)
 ROLES = {
     # name: (default read-only, privileges on ext_support.tickets)
-    "datatalk_test_source": (True, "SELECT"),
+    "datatalk_test_source": (True, "SELECT"),  # also SELECT on ext_support.agents, below
     "datatalk_test_source_rw": (True, "SELECT, INSERT"),
     "datatalk_test_source_lax": (False, "SELECT"),
 }
@@ -38,6 +38,8 @@ def operator_database(database):
                                    "opened_on date)")
         connection.exec_driver_sql("INSERT INTO ext_support.tickets VALUES (1, 'open', '2025-05-01'), "
                                    "(2, 'closed', '2025-05-02'), (3, 'open', '2025-05-03')")
+        connection.exec_driver_sql("CREATE TABLE ext_support.agents (name text, email text)")
+        connection.exec_driver_sql("INSERT INTO ext_support.agents VALUES ('Ana', 'ana@example.com')")
         connection.exec_driver_sql("CREATE TABLE ext_support.staff_notes (note text)")
         connection.exec_driver_sql("INSERT INTO ext_support.staff_notes VALUES ('private')")
         database_name = connection.exec_driver_sql("SELECT current_database()").scalar()
@@ -51,6 +53,7 @@ def operator_database(database):
             connection.exec_driver_sql(f'GRANT CONNECT ON DATABASE "{database_name}" TO {role}')
             connection.exec_driver_sql(f"GRANT USAGE ON SCHEMA ext_support TO {role}")
             connection.exec_driver_sql(f"GRANT {privileges} ON ext_support.tickets TO {role}")
+        connection.exec_driver_sql("GRANT SELECT ON ext_support.agents TO datatalk_test_source")
     engine.dispose()
     return password
 
@@ -81,12 +84,13 @@ def ask(client, question, source="support", key=None):
 def test_schema_lists_the_tables_the_role_can_read(client, support):
     listed = client.get("/api/schema").json()["sources"]
     assert listed == [{"id": "support", "label": "Support desk", "needs_key": False, "tables": [
+        {"name": "agents", "columns": [{"name": "name", "type": "text"}, {"name": "email", "type": "text"}]},
         {"name": "tickets", "columns": [{"name": "id", "type": "integer"}, {"name": "status", "type": "text"},
                                         {"name": "opened_on", "type": "date"}]}]}]  # staff_notes is not granted
 
 
 def test_questions_are_answered_from_the_connected_database(client, support, model):
-    model["Tickets by status?"] = "SELECT status, count(*) AS n FROM {table} GROUP BY status ORDER BY status"
+    model["Tickets by status?"] = "SELECT status, count(*) AS n FROM tickets GROUP BY status ORDER BY status"
     body = ask(client, "Tickets by status?").json()
     assert body["rows"] == [{"status": "closed", "n": 1}, {"status": "open", "n": 2}]
     assert body["source"] == "database" and body["dataset_name"] == "Support desk" and body["generator"] == "llm"
@@ -103,6 +107,8 @@ def test_questions_about_databases_need_ai_mode(client, support):
     "SELECT count(*) FROM orders",             # demo tables
     "SELECT count(*) FROM public.orders",
     "SELECT * FROM pg_roles",                  # catalog tables stay reachable by name, so the allowlist matters
+    "WITH pg_roles AS (SELECT * FROM pg_roles) SELECT * FROM pg_roles",  # a CTE cannot hide a real table
+    "WITH staff_notes AS (SELECT * FROM staff_notes) SELECT * FROM staff_notes",
     "DELETE FROM tickets",
     "SELECT pg_read_file('/etc/passwd')",
 ])
@@ -117,6 +123,18 @@ def test_allowlist_limits_the_tables(client, configured, operator_database, mode
     # The only allowlisted table is not readable by the role, so nothing is left and the source is not offered.
     assert client.get("/api/schema").json()["sources"] == []
     assert ask(client, "Anything?").status_code == 404
+
+
+def test_allowlist_holds_even_when_the_role_can_read_more(client, configured, operator_database, model):
+    configured(support={"URL": role_url("datatalk_test_source", operator_database), "SCHEMA": "ext_support",
+                        "TABLES": "tickets"})
+    assert [t["name"] for t in client.get("/api/schema").json()["sources"][0]["tables"]] == ["tickets"]
+    for sql in ("SELECT * FROM agents", "WITH agents AS (SELECT * FROM agents) SELECT * FROM agents",
+                "WITH x AS (SELECT 1) SELECT email FROM agents"):
+        model["Try it"] = sql
+        assert ask(client, "Try it").status_code == 400, sql
+    model["Count"] = "WITH open AS (SELECT * FROM tickets WHERE status = 'open') SELECT count(*) AS n FROM open"
+    assert ask(client, "Count").json()["rows"] == [{"n": 2}]
 
 
 def test_unsafe_roles_are_refused(client, configured, operator_database, caplog):
@@ -150,13 +168,13 @@ def test_access_key(client, configured, operator_database, model):
                         "ACCESS_KEY": KEY})
     listed = client.get("/api/schema").json()["sources"]
     assert listed == [{"id": "support", "label": "support", "needs_key": True}]  # tables hidden until unlocked
-    model["Count"] = "SELECT count(*) AS n FROM {table}"
+    model["Count"] = "SELECT count(*) AS n FROM tickets"
     assert ask(client, "Count").status_code == 403
     assert ask(client, "Count", key="wrong").status_code == 403
     assert ask(client, "Count", key=KEY).json()["rows"] == [{"n": 3}]
     assert client.get("/api/sources/support", headers={"X-Source-Key": "wrong"}).status_code == 403
     unlocked = client.get("/api/sources/support", headers={"X-Source-Key": KEY}).json()
-    assert [t["name"] for t in unlocked["tables"]] == ["tickets"]
+    assert [t["name"] for t in unlocked["tables"]] == ["agents", "tickets"]
 
 
 def test_one_source_at_a_time(client, support):

@@ -2,6 +2,9 @@ from collections.abc import Iterable
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
+from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
+from sqlglot.optimizer.scope import traverse_scope
 
 
 class UnsafeQueryError(ValueError):
@@ -57,16 +60,31 @@ def _check_functions(tree: exp.Expression) -> None:
 
 
 def _check_tables(tree: exp.Expression, allowed_tables: Iterable[str]) -> None:
+    """Every table must be allowed, unless the name refers to a CTE that is visible where it is used.
+
+    CTE names are resolved by scope, as PostgreSQL does: a non-recursive CTE cannot see itself, so in
+    WITH t AS (SELECT * FROM t) the inner t is the real table t; a CTE defined inside a subquery is not visible
+    outside it; and unquoted names are folded to lower case first, so WITH "T" AS (...) does not hide a table t.
+    """
     permitted = {name.casefold() for name in allowed_tables}
-    cte_names = {cte.alias_or_name.casefold() for cte in tree.find_all(exp.CTE)}
-    for table in tree.find_all(exp.Table):
-        if isinstance(table.this, exp.Func):  # table function such as generate_series(); checked above
-            continue
-        if table.db or table.catalog:
-            raise UnsafeQueryError("Schema-qualified table access is not allowed.")
-        name = table.name.casefold()
-        if name not in permitted and name not in cte_names:
-            raise UnsafeQueryError(f"The query references a table outside the exposed schema: {table.name}.")
+    tree = normalize_identifiers(tree.copy(), dialect="postgres")
+    tables = [table for table in tree.find_all(exp.Table) if not isinstance(table.this, exp.Func)]
+    if any(table.db or table.catalog for table in tables):
+        raise UnsafeQueryError("Schema-qualified table access is not allowed.")
+    try:
+        scopes = traverse_scope(tree)
+    except SqlglotError as exc:
+        raise UnsafeQueryError("The query's structure could not be checked.") from exc
+    checked = set()
+    for scope in scopes:
+        for table in scope.tables:
+            if isinstance(table.this, exp.Func):  # table function such as generate_series(); checked above
+                continue
+            checked.add(id(table))
+            if table.name not in scope.cte_sources and table.name not in permitted:
+                raise UnsafeQueryError(f"The query references a table outside the exposed schema: {table.name}.")
+    if any(id(table) not in checked for table in tables):  # a table no scope accounts for: refuse rather than guess
+        raise UnsafeQueryError("The query's structure could not be checked.")
 
 
 def _literal_int(node: exp.Expression | None) -> int | None:
