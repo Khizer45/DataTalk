@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
+import Clarification from './components/Clarification.jsx'
 import DatasetView from './components/DatasetView.jsx'
 import Icon from './components/Icon.jsx'
 import Results from './components/Results.jsx'
@@ -68,6 +69,7 @@ function App() {
   const [activeId, setActiveId] = useState(DEMO)
   const [sourceKeys, setSourceKeys] = useState(() => loadSourceKeys())
   const [unlocked, setUnlocked] = useState({})
+  const questionBox = useRef(null)
   const health = useServerHealth()
 
   useEffect(() => {
@@ -96,6 +98,7 @@ function App() {
   function forget(id) {
     setDatasets(list => list.filter(dataset => dataset.id !== id))
     setActiveId(current => (current === id ? DEMO : current))
+    setResult(current => (current?.sourceId === id ? null : current))
   }
 
   function forgetKey(id) {
@@ -129,7 +132,7 @@ function App() {
         body: JSON.stringify({ question: value, max_rows: 100, ...(dataset ? { dataset_id: dataset.id } : {}),
           ...(source ? { source_id: source.id } : {}) }),
       })
-      setResult(data)
+      setResult({ ...data, sourceId }) // a clarification's options are asked about the same data
       setResultVersion(version => version + 1)
     } catch (err) {
       if (dataset && err.status === 404) {
@@ -143,9 +146,18 @@ function App() {
     } finally { setLoading(false) }
   }
 
-  function askDemo(text) {
-    setActiveId(DEMO)
-    ask(text, DEMO)
+  function askAbout(text, sourceId) {
+    setActiveId(sourceId)
+    ask(text, sourceId)
+  }
+
+  const askDemo = text => askAbout(text, DEMO)
+
+  function rephrase() {
+    const box = questionBox.current
+    if (!box) return
+    box.focus()
+    box.setSelectionRange(box.value.length, box.value.length)
   }
 
   function uploaded(dataset) {
@@ -221,14 +233,14 @@ function App() {
           <section className="ask-card">
             <div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">{isMac ? '⌘' : 'Ctrl'} ↵</span></div>
             <form onSubmit={event => { event.preventDefault(); ask() }}>
-              <textarea aria-label="Your question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder={suggestions.length ? `e.g. ${suggestions[0]}` : activeSource ? 'Ask a question about this database' : 'e.g. Show revenue by customer country'} rows="2"/>
+              <textarea ref={questionBox} aria-label="Your question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder={suggestions.length ? `e.g. ${suggestions[0]}` : activeSource ? 'Ask a question about this database' : 'e.g. Show revenue by customer country'} rows="2"/>
               <div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner" aria-label="Working"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div>
             </form>
           </section>
           {active && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> questions about your own file need AI mode, which is off on this server, so they will be declined. Switch back to the demo data to try the example questions.</p>}
           {activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> questions about a connected database need AI mode, which is off on this server, so they will be declined.</p>}
           {!active && !activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> no AI model is connected, so DataTalk only answers question types like the examples below and says so when it can't.</p>}
-          {schemaInfo?.mode === 'ai' && <p className="mode-note"><strong>AI mode:</strong> a language model writes the SQL. Open "View the SQL that ran" before relying on an answer.</p>}
+          {schemaInfo?.mode === 'ai' && <p className="mode-note"><strong>AI mode:</strong> a language model writes the SQL. It may ask which reading of your question you mean, and lists what it assumed under the results. Open "View the SQL that ran" before relying on an answer.</p>}
           {active || activeSource ? suggestions.length > 0 && <>
             <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>{active ? 'Ask about your file' : 'Ask about this database'}</h2></div><span className="suggestion-caption">{active ? 'Built from your column names' : `Built from the ${sourceTables[0].name} table's columns`}</span></div>
             <section className="suggestion-grid">{suggestions.map((text, i) => <button className="suggestion-card" key={text} onClick={() => ask(text)}><div className={`suggestion-icon si-${i}`}>?</div><div className="suggestion-text"><span>{active ? 'Your data' : 'Database'}</span><strong>{text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
@@ -237,7 +249,9 @@ function App() {
             <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => askDemo(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
           </>}
           {error && <div className="notice error-notice" role="alert"><span>!</span>{error}<button aria-label="Dismiss" onClick={() => setError('')}>×</button></div>}
-          {result && <Results key={resultVersion} result={result}/>}
+          {result && (result.clarification
+            ? <Clarification key={resultVersion} result={result} onChoose={option => askAbout(option, result.sourceId)}/>
+            : <Results key={resultVersion} result={result} onRephrase={rephrase}/>)}
         </>}
         <footer className="page-footer"><span>Read-only · the demo data is synthetic</span><a href={REPO_URL} target="_blank" rel="noreferrer">Source code on GitHub</a></footer>
       </div>

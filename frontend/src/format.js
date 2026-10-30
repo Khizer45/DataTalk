@@ -12,4 +12,8 @@ export function formatValue(value, key = '', { money = true } = {}) {
 
 export const formatCount = value => number.format(value)
 
+// Which data a result is about, as shown in its heading.
+export const sourceLabel = result => result.source === 'upload' ? `Your file: ${result.dataset_name}`
+  : result.source === 'database' ? `Database: ${result.dataset_name}` : 'Demo data'
+
 export const prettyLabel = key => key.replaceAll('_', ' ')
