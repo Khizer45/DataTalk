@@ -6,6 +6,8 @@ class QueryRequest(BaseModel):
     max_rows: int = Field(default=100, ge=1, le=500)
     # An uploaded dataset to ask about; its access token goes in the X-Dataset-Token header. None = demo data.
     dataset_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{16}$")
+    # A database configured on the server (DATA_SOURCES); its access key, if any, goes in X-Source-Key.
+    source_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,30}$")
 
 
 class ColumnInfo(BaseModel):

@@ -34,6 +34,10 @@ class Settings:
     max_active_datasets: int = int(os.getenv("MAX_ACTIVE_DATASETS", "100"))
     upload_rate_limit_per_minute: int = int(os.getenv("UPLOAD_RATE_LIMIT_PER_MINUTE", "5"))
 
+    # Databases the operator connects DataTalk to (see app/sources.py); each needs SOURCE_<ID>_URL with a
+    # read-only role. Configured on the server only, never from the browser.
+    data_sources: list[str] = _csv("DATA_SOURCES", "")
+
     cors_origins: list[str] = _csv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
     max_concurrent_queries: int = int(os.getenv("MAX_CONCURRENT_QUERIES", "4"))
