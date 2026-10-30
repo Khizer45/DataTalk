@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
 import { pickChart } from '../chart.js'
 import { csvFilename, downloadCsv, toCsv } from '../csv.js'
-import { formatValue, prettyLabel } from '../format.js'
+import { formatValue, prettyLabel, sourceLabel } from '../format.js'
 import { isNumericColumn, nextDirection, sortRows } from '../sort.js'
 
 const ARIA_SORT = { asc: 'ascending', desc: 'descending' }
 
-export default function Results({ result }) {
+export default function Results({ result, onRephrase }) {
   const [sort, setSort] = useState({ key: null, direction: null })
   const columns = useMemo(() => Object.keys(result.rows[0] || {}), [result])
   const numeric = useMemo(() => new Set(columns.filter(key => isNumericColumn(result.rows, key))), [result, columns])
@@ -25,7 +25,7 @@ export default function Results({ result }) {
   return <section className="result-card" aria-live="polite">
     <div className="result-heading">
       <div><span className="eyebrow">QUERY RESULTS</span><h2>{result.row_count} {result.row_count === 1 ? 'row' : 'rows'} returned</h2></div>
-      <div className="result-meta"><span className="live-dot"/>{result.generator === 'llm' ? 'AI generated' : 'Demo mode (rules)'}<span className="meta-divider"/>{result.source === 'upload' ? `Your file: ${result.dataset_name}` : result.source === 'database' ? `Database: ${result.dataset_name}` : 'Demo data'}<span className="meta-divider"/>Read only</div>
+      <div className="result-meta"><span className="live-dot"/>{result.generator === 'llm' ? 'AI generated' : 'Demo mode (rules)'}<span className="meta-divider"/>{sourceLabel(result)}<span className="meta-divider"/>Read only</div>
     </div>
     <p className="explanation">{result.explanation}</p>
     <details className="sql-panel">
@@ -66,5 +66,14 @@ export default function Results({ result }) {
         {result.truncated && <div className="table-foot">Showing the first {result.row_count} rows. Ask a narrower question to see fewer.</div>}
       </div>
     </>}
+
+    {result.assumptions?.length > 0 && <div className="assumptions">
+      <span className="eyebrow">WHAT THE AI ASSUMED</span>
+      <ul>{result.assumptions.map((text, i) => <li key={i}>{text}</li>)}</ul>
+      <div className="assumptions-foot">
+        <span>Not what you meant? Rephrase the question to say so, and ask again.</span>
+        <button type="button" className="secondary-button" onClick={onRephrase}>Rephrase</button>
+      </div>
+    </div>}
   </section>
 }
