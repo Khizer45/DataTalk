@@ -11,10 +11,29 @@ _KNOWN_ERRORS = {
     "42501": (400, "The query tried to read data DataTalk is not allowed to access."),
     "25006": (400, "The query tried to change data, which DataTalk never allows."),
 }
+# Errors the AI model can fix by writing the query again: a column or table that does not exist (including a FROM entry
+# the query forgot). PostgreSQL's message and hint for these name columns and tables only, never row values, so they
+# can be sent back to the model. Other errors (timeouts, type mismatches, ...) are reported to the user as they are.
+_FIXABLE_BY_MODEL = {"42703": "a column in the query does not exist",
+                     "42P01": "a table in the query does not exist or is missing from FROM"}
+
+
+def _sqlstate(exc: Exception) -> str | None:
+    return getattr(getattr(exc, "orig", None), "sqlstate", None) if isinstance(exc, DBAPIError) else None
+
+
+def fixable_by_model(exc: Exception) -> str | None:
+    """What to tell the model about an unknown column or table, or None for any other error."""
+    code = _sqlstate(exc)
+    if code not in _FIXABLE_BY_MODEL:
+        return None
+    diag = exc.orig.diag
+    hint = f" Hint: {diag.message_hint}" if diag.message_hint else ""
+    return f"PostgreSQL error: {diag.message_primary or _FIXABLE_BY_MODEL[code]}.{hint}"
 
 
 def describe_database_error(exc: Exception) -> tuple[int, str]:
-    code = getattr(getattr(exc, "orig", None), "sqlstate", None) if isinstance(exc, DBAPIError) else None
+    code = _sqlstate(exc)
     if code in _KNOWN_ERRORS:
         return _KNOWN_ERRORS[code]
     if code == "57014":

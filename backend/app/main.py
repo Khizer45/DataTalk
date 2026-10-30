@@ -19,10 +19,10 @@ from .database import DatabaseBusyError, execute_read_query, get_engine, verify_
 from .datasets import (UPLOADS_SCHEMA, DatasetNotFound, UploadsFull, cleanup_expired, create_dataset, delete_dataset,
                        ensure_registry, get_dataset, schema_text, uploads_enabled, verify_ingest_role)
 from .errors import describe_database_error
-from .generator import LLMError, generate_sql, llm_enabled
+from .generator import LLMError, answer_question, llm_enabled
 from .limits import RateLimiter
 from .rules import SAMPLE_QUESTIONS, UnsupportedQuestionError
-from .safety import UnsafeQueryError, validate_read_query
+from .safety import UnsafeQueryError
 from . import sources
 from .schema_info import describe_schema, get_definitions, get_table_row_counts, get_tables
 from .schemas import QueryRequest
@@ -242,31 +242,41 @@ def query(payload: QueryRequest, request: Request, x_dataset_token: str = Header
     else:
         kind, name, context, allowed = "demo", None, describe_schema("basic"), [t["name"] for t in get_tables()]
         search_path, engine = None, None
+
+    def run(sql: str) -> list[dict]:
+        try:
+            return execute_read_query(sql, search_path=search_path, engine=engine)
+        except SQLAlchemyError as exc:  # logged here, so a failed first try that the retry fixes is still recorded
+            logger.warning("query failed request_id=%s sql=%r error=%s", request_id, sql, exc)
+            raise
+
+    attempts = []
     try:
-        candidate, generator, explanation = generate_sql(payload.question, context, allow_rules=kind == "demo")
-        # Fetch one extra row so truncation is reported accurately.
-        sql = validate_read_query(candidate, allowed, limit + 1)
+        # Model or rules, the SQL is validated against this source's tables before it runs. One extra row is fetched
+        # so truncation is reported accurately.
+        answer = answer_question(payload.question, context, allowed, limit + 1, run, allow_rules=kind == "demo",
+                                 attempts=attempts)
     except UnsupportedQuestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except UnsafeQueryError as exc:
-        logger.warning("rejected query request_id=%s reason=%s", request_id, exc)
+        logger.warning("rejected query request_id=%s reason=%s model_calls=%d", request_id, exc, len(attempts))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LLMError as exc:
-        logger.warning("llm failure request_id=%s cause=%r", request_id, exc.__cause__)
+        logger.warning("llm failure request_id=%s cause=%r model_calls=%d", request_id, exc.__cause__, len(attempts))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    try:
-        raw_rows = execute_read_query(sql, search_path=search_path, engine=engine)
     except DatabaseBusyError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
-        logger.warning("query failed request_id=%s sql=%r error=%s", request_id, sql, exc)
         status, message = describe_database_error(exc)
         raise HTTPException(status_code=status, detail=f"{message} (reference {request_id})") from exc
 
-    rows = [{key: _json_value(value) for key, value in row.items()} for row in raw_rows[:limit]]
+    # A clarification ran nothing: the model asks which reading of the question was meant.
+    rows = [{key: _json_value(value) for key, value in row.items()} for row in answer.rows[:limit]]
     origin = {"upload": f"dataset:{payload.dataset_id}", "database": f"database:{payload.source_id}"}.get(kind, kind)
-    logger.info("query ok request_id=%s generator=%s source=%s rows=%d", request_id, generator, origin, len(rows))
-    return {"question": payload.question, "sql": sql, "rows": rows, "row_count": len(rows),
-            "truncated": len(raw_rows) > limit, "generator": generator, "explanation": explanation,
+    logger.info("%s request_id=%s generator=%s source=%s rows=%d model_calls=%d",
+                "clarification asked" if answer.clarification else "query ok", request_id, answer.generator, origin,
+                len(rows), len(attempts))
+    return {"question": payload.question, "sql": answer.sql, "rows": rows, "row_count": len(rows),
+            "truncated": len(answer.rows) > limit, "generator": answer.generator, "explanation": answer.explanation,
+            "assumptions": answer.assumptions, "clarification": answer.clarification,
             "source": kind, "dataset_name": name}

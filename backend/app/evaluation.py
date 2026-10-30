@@ -6,8 +6,9 @@
 
 A case passes when the result rows match a reference query (order-insensitive unless the case says
 otherwise; extra columns are allowed), or, for questions that should not be answered, when DataTalk
-declines or the SQL is rejected. Matching values is not the same as being right for the right reason,
-so read the per-case report as well as the totals.
+declines, the SQL is rejected, or the model asks a clarifying question. Each question goes through the
+same pipeline as the app, including the one retry. Matching values is not the same as being right for
+the right reason, so read the per-case report as well as the totals.
 """
 import argparse
 import json
@@ -22,7 +23,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
 from .database import execute_read_query
-from .generator import LLMError, generate_sql, llm_enabled
+from .generator import LLMError, answer_question, llm_enabled
 from .rules import UnsupportedQuestionError
 from .safety import UnsafeQueryError, validate_read_query
 from .schema_info import describe_schema, get_table_row_counts, get_tables
@@ -84,13 +85,14 @@ def _run_reference(sql: str, allowed: list[str]) -> list[dict]:
 
 
 def run_case(case: dict, schema: str, allowed: list[str]) -> dict:
+    # attempts gets one {"sql", "problem"} entry per model call, so a retry and what prompted it show in the report.
     record = {"id": case["id"], "category": case["category"], "question": case["question"],
-              "expected": case["expected"], "generator": None, "sql": None, "detail": None}
+              "expected": case["expected"], "generator": None, "sql": None, "assumptions": [], "attempts": [],
+              "detail": None}
     started = time.perf_counter()
     try:
-        candidate, record["generator"], _ = generate_sql(case["question"], schema)
-        record["sql"] = candidate
-        rows = execute_read_query(validate_read_query(candidate, allowed, ROW_LIMIT))
+        answer = answer_question(case["question"], schema, allowed, ROW_LIMIT, execute_read_query,
+                                 attempts=record["attempts"])
     except UnsupportedQuestionError:
         outcome = "declined"
     except UnsafeQueryError as exc:
@@ -100,17 +102,22 @@ def run_case(case: dict, schema: str, allowed: list[str]) -> dict:
     except SQLAlchemyError as exc:
         outcome, record["detail"] = "execution_error", str(getattr(exc, "orig", exc)).splitlines()[0]
     else:
-        if case["expected"] == "answer":
+        record.update(generator=answer.generator, sql=answer.sql, assumptions=answer.assumptions)
+        if answer.clarification:
+            # Nothing ran: right for an ambiguous question, a miss (but not a wrong answer) for an answerable one.
+            outcome, record["detail"] = "clarification", answer.clarification["question"]
+        elif case["expected"] == "answer":
             references = [case["sql"], *case.get("alt_sql", [])]
-            matched = any(results_match(rows, _run_reference(sql, allowed), case.get("order_matters", False))
+            matched = any(results_match(answer.rows, _run_reference(sql, allowed), case.get("order_matters", False))
                           for sql in references)
             outcome = "correct" if matched else "wrong_result"
-            record["detail"] = None if matched else f"{len(rows)} rows returned"
+            record["detail"] = None if matched else f"{len(answer.rows)} rows returned"
         else:
             outcome = "answered"
     record["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
     record["outcome"] = outcome
-    record["passed"] = outcome == "correct" if case["expected"] == "answer" else outcome in ("declined", "rejected")
+    record["passed"] = (outcome == "correct" if case["expected"] == "answer"
+                        else outcome in ("declined", "rejected", "clarification"))
     return record
 
 
@@ -137,6 +144,10 @@ def summarize(results: list[dict]) -> dict:
         "valid_sql_rate": _rate(len(attempted), len(answerable)),
         "execution_success_rate": _rate(len(executed), len(answerable)),
         "declined_answerable_rate": _rate(sum(r["outcome"] == "declined" for r in answerable), len(answerable)),
+        "clarified_answerable_rate": _rate(sum(r["outcome"] == "clarification" for r in answerable),
+                                           len(answerable)),
+        # Questions where the model's first reply could not be used and it was asked once more.
+        "retry_rate": _rate(sum(len(r["attempts"]) > 1 for r in results), len(results)),
         "decline_cases": len(decline),
         "decline_accuracy": _rate(sum(r["passed"] for r in decline), len(decline)),
         "latency_ms_p50": statistics.median(latencies) if latencies else None,
@@ -186,7 +197,9 @@ def main() -> None:
     print(f"  valid SQL               {_percent(summary['valid_sql_rate'])}")
     print(f"  ran without error       {_percent(summary['execution_success_rate'])}")
     print(f"  declined (should answer){_percent(summary['declined_answerable_rate']):>8}")
+    print(f"  asked to clarify        {_percent(summary['clarified_answerable_rate'])}")
     print(f"Questions to decline ({summary['decline_cases']}): handled {_percent(summary['decline_accuracy'])}")
+    print(f"Retried once after an unusable first reply: {_percent(summary['retry_rate'])} of questions")
     print(f"Latency p50 {summary['latency_ms_p50']} ms, p95 {summary['latency_ms_p95']} ms")
     for name, entry in sorted(summary["by_category"].items()):
         print(f"  {name:<14} {entry['passed']}/{entry['cases']}")

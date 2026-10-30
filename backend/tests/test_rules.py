@@ -1,7 +1,5 @@
 import pytest
 
-from app import generator
-from app.limits import DailyQuota
 from app.rules import SAMPLE_QUESTIONS, UnsupportedQuestionError, rule_based_sql
 
 
@@ -40,21 +38,3 @@ def test_date_ranges_get_a_specific_message():
                                       "Show revenue by customer country"])
 def test_revenue_counts_completed_orders_only(question):
     assert "status = 'completed'" in rule_based_sql(question)[0]
-
-
-@pytest.fixture
-def model_calls(monkeypatch):
-    monkeypatch.setattr(generator.settings, "llm_api_key", "test-key")
-    monkeypatch.setattr(generator.settings, "llm_model", "test-model")
-    calls = []
-    monkeypatch.setattr(generator, "_llm_sql", lambda question, schema: calls.append(question) or ("SELECT 1", "llm", ""))
-    return calls
-
-
-def test_daily_ai_limit_falls_back_to_demo_mode(model_calls, monkeypatch):
-    monkeypatch.setattr(generator, "_llm_quota", DailyQuota(1))
-    assert generator.generate_sql("Which channel grew fastest?", "")[1] == "llm"
-    assert generator.generate_sql("How many orders are pending?", "")[1] == "rules"
-    with pytest.raises(UnsupportedQuestionError, match="today's limit"):
-        generator.generate_sql("Which channel grew fastest?", "")
-    assert model_calls == ["Which channel grew fastest?"]

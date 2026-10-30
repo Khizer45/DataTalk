@@ -85,6 +85,20 @@ def ask_sql(client, dataset, model):
     return ask(client, dataset, "Everything?").json()["sql"]
 
 
+def test_a_retry_stays_inside_the_dataset(client, uploads, model):
+    first = upload(client, SALES).json()
+    second = upload(client, EXPENSES).json()
+    second_table = re.search(r"FROM (t_\w+)", ask_sql(client, second, model)).group(1)
+    model["Units in total?"] = ["SELECT SUM(units_sold) AS units FROM orders",
+                                "SELECT SUM(units_sold) AS units FROM {table}"]
+    assert ask(client, first, "Units in total?").json()["rows"] == [{"units": 32}]
+    assert "outside the exposed schema: orders" in model.calls[-1][-1]["content"]
+    # The retry goes through the same checks: reaching another upload on the second try is still refused.
+    model["Units again?"] = ["SELECT SUM(units) FROM {table}", f"SELECT * FROM {second_table}"]
+    response = ask(client, first, "Units again?")
+    assert response.status_code == 400 and "outside the exposed schema" in response.json()["detail"]
+
+
 def test_writes_are_rejected_for_uploads(client, uploads, model):
     dataset = upload(client, SALES).json()
     model["Delete it"] = "DELETE FROM {table}"

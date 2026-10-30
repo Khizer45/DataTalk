@@ -9,6 +9,7 @@ throw away (setup creates tables, demo data and the reader role there):
 
 CSV-upload tests also need TEST_INGEST_DATABASE_URL.
 """
+import json
 import os
 import re
 
@@ -60,18 +61,42 @@ def uploads(database):
     cleanup_expired()
 
 
+class StandInModel(dict):
+    """The stand-in model's replies, by question. calls holds the messages of every call, in order."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+
 @pytest.fixture
 def model(monkeypatch):
-    """AI mode with a stand-in model: each question maps to SQL, with {table} replaced by the first table in the
-    schema it is shown. Everything after the model (validation, isolation, read-only execution) is real."""
+    """AI mode with a stand-in model (no API key, no network). model[question] is what it replies:
+
+    - SQL text: sent as {"sql": <the SQL>, "explanation": "Stand-in model", "assumptions": []};
+    - a dict: sent as that JSON object (an answer, a clarification, or something malformed);
+    - a list: one of the above per call, the second item answering the retry.
+
+    {table} is replaced by the first table in the schema the model is shown. Everything after the model's reply
+    (strict parsing, the retry, validation, isolation, read-only execution) is real. Each test gets a fresh daily quota.
+    """
     from app import generator
+    from app.limits import DailyQuota
     monkeypatch.setattr(generator.settings, "llm_api_key", "test-key")
     monkeypatch.setattr(generator.settings, "llm_model", "test-model")
-    answers = {}
+    monkeypatch.setattr(generator, "_llm_quota", DailyQuota(generator.settings.llm_daily_limit))
+    answers = StandInModel()
 
-    def reply(question, schema_context):
-        table = re.match(r"(\w+)\(", schema_context).group(1)
-        return answers[question].format(table=table), "llm", "Stand-in model"
+    def chat(messages):
+        answers.calls.append(messages)
+        prompt = messages[1]["content"]
+        reply = answers[prompt.partition("\n\nQuestion: ")[2]]
+        if isinstance(reply, list):
+            reply = reply[len(messages) // 2 - 1]  # 2 messages on the first call, 2 more on the retry
+        if isinstance(reply, str):
+            reply = {"sql": reply, "explanation": "Stand-in model", "assumptions": []}
+        table = re.match(r"Schema:\n(\w+)\(", prompt).group(1)
+        return json.dumps(reply).replace("{table}", table)
 
-    monkeypatch.setattr(generator, "_llm_sql", reply)
+    monkeypatch.setattr(generator, "_chat", chat)
     return answers

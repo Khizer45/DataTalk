@@ -66,9 +66,10 @@ def test_every_evaluation_reference_query_runs(database):
                 assert evaluation._run_reference(sql, allowed), case["id"]
 
 
-def test_scoring_gives_full_marks_to_the_reference_answers(database, monkeypatch):
+def test_scoring_gives_full_marks_to_the_reference_answers(database, model):
+    # A stand-in model that replies with each reference query, through the same pipeline as the app.
     cases = [case for case in json.loads((evaluation.EVAL_DIR / "cases.json").read_text())["cases"]
              if case["expected"] == "answer"]
-    by_question = {case["question"]: case["sql"] for case in cases}
-    monkeypatch.setattr(evaluation, "generate_sql", lambda question, schema: (by_question[question], "reference", ""))
-    assert evaluation.run_evaluation(cases)["summary"]["execution_accuracy"] == 1.0
+    model.update({case["question"]: case["sql"] for case in cases})
+    summary = evaluation.run_evaluation(cases)["summary"]
+    assert summary["execution_accuracy"] == 1.0 and summary["retry_rate"] == 0
