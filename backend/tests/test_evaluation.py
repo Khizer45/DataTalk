@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 
-from app.evaluation import EVAL_DIR, normalize_value, results_match
+from app.evaluation import EVAL_DIR, normalize_value, results_match, run_case, summarize
 
 
 def test_equivalent_values_compare_equal():
@@ -42,3 +42,21 @@ def test_cases_file_is_well_formed():
         assert case["expected"] in ("answer", "decline")
         assert case["question"].strip()
         assert ("sql" in case) == (case["expected"] == "answer")
+
+
+def test_a_clarification_counts_as_declining_not_as_a_wrong_answer(model):
+    clarification = {"clarification": {"question": "Best by revenue or by number of orders?",
+                                       "options": ["Top 5 customers by revenue?", "Top 5 customers by orders?"]}}
+    model["Who are our best customers?"] = clarification
+    model["How many customers are there?"] = clarification
+    schema, allowed = "customers(id, name, country)", ["customers"]
+    declined = run_case({"id": "a", "category": "ambiguous", "expected": "decline",
+                         "question": "Who are our best customers?"}, schema, allowed)
+    missed = run_case({"id": "b", "category": "aggregation", "expected": "answer",
+                       "question": "How many customers are there?", "sql": "SELECT COUNT(*) FROM customers"},
+                      schema, allowed)
+    assert declined["outcome"] == missed["outcome"] == "clarification"
+    assert declined["passed"] and not missed["passed"] and missed["sql"] is None
+    summary = summarize([declined, missed])
+    assert summary["decline_accuracy"] == 1 and summary["wrong_answer_rate"] == 0
+    assert summary["clarified_answerable_rate"] == 1 and summary["retry_rate"] == 0

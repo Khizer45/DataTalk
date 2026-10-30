@@ -117,6 +117,19 @@ def test_a_source_cannot_reach_anything_else(client, support, model, sql):
     assert ask(client, "Try it").status_code == 400
 
 
+def test_a_retry_stays_inside_the_database(client, support, model):
+    model["Open tickets?"] = ["SELECT count(*) AS n FROM staff_notes",
+                              "SELECT count(*) AS n FROM tickets WHERE status = 'open'"]
+    assert ask(client, "Open tickets?").json()["rows"] == [{"n": 2}]
+    assert "outside the exposed schema: staff_notes" in model.calls[-1][-1]["content"]
+    # An unknown column earns a retry, and the retry is checked like any query: pg_roles is readable by name at the
+    # database level, so only the validator keeps it out.
+    model["Roles?"] = ["SELECT nope FROM tickets", "SELECT rolname FROM pg_roles"]
+    response = ask(client, "Roles?")
+    assert response.status_code == 400 and "outside the exposed schema: pg_roles" in response.json()["detail"]
+    assert 'column "nope" does not exist' in model.calls[-1][-1]["content"]
+
+
 def test_allowlist_limits_the_tables(client, configured, operator_database, model):
     configured(support={"URL": role_url("datatalk_test_source", operator_database), "SCHEMA": "ext_support",
                         "TABLES": "staff_notes"})
