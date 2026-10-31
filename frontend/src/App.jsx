@@ -13,6 +13,16 @@ import { suggestQuestions } from './suggestions.js'
 
 const REPO_URL = 'https://github.com/Khizer45/DataTalk'
 const DEMO = 'demo'
+const MAX_QUESTION = 1000  // the API rejects longer questions
+// More questions demo mode understands, built from measures, breakdowns and filters.
+const morePrompts = [
+  'Revenue by sales channel in 2025',
+  'Which 5 customers spent the most?',
+  'How many orders were cancelled in March 2025?',
+  'Average order value by country',
+  'Top 3 product categories by quantity sold',
+  'Which products have never been ordered?',
+]
 const prompts = [
   { icon: '↗', text: 'What was total revenue by month?', tag: 'Revenue' },
   { icon: '▤', text: 'Show the top 5 products by revenue', tag: 'Products' },
@@ -70,7 +80,18 @@ function App() {
   const [sourceKeys, setSourceKeys] = useState(() => loadSourceKeys())
   const [unlocked, setUnlocked] = useState({})
   const questionBox = useRef(null)
+  const resultRef = useRef(null)
+  const errorRef = useRef(null)
   const health = useServerHealth()
+
+  // A new page starts at the top; a new answer is scrolled into view.
+  useEffect(() => { window.scrollTo(0, 0) }, [view])
+  useEffect(() => {
+    if (resultVersion > 0) resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [resultVersion])
+  useEffect(() => {
+    if (error) errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [error])
 
   useEffect(() => {
     if (health !== 'ok' || schemaInfo) return
@@ -233,13 +254,13 @@ function App() {
           <section className="ask-card">
             <div className="ask-card-top"><div className="ask-icon"><Icon name="spark" size={19}/></div><div><strong>Ask your data</strong><span>Natural language · schema aware</span></div><span className="keyboard-hint">{isMac ? '⌘' : 'Ctrl'} ↵</span></div>
             <form onSubmit={event => { event.preventDefault(); ask() }}>
-              <textarea ref={questionBox} aria-label="Your question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder={suggestions.length ? `e.g. ${suggestions[0]}` : activeSource ? 'Ask a question about this database' : 'e.g. Show revenue by customer country'} rows="2"/>
-              <div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner" aria-label="Working"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div>
+              <textarea ref={questionBox} aria-label="Your question" maxLength={MAX_QUESTION} value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask() }} placeholder={suggestions.length ? `e.g. ${suggestions[0]}` : activeSource ? 'Ask a question about this database' : 'e.g. Show revenue by customer country'} rows="2"/>
+              <div className="ask-footer"><div className="privacy-note"><span className="lock">◈</span> Queries run in read-only mode{question.length > MAX_QUESTION * 0.8 && <span className="char-count">{question.length}/{MAX_QUESTION}</span>}</div><button className="ask-button" disabled={loading || !question.trim()}>{loading ? <span className="spinner" aria-label="Working"/> : <><span>Ask DataTalk</span><Icon name="arrow" size={17}/></>}</button></div>
             </form>
           </section>
           {active && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> questions about your own file need AI mode, which is off on this server, so they will be declined. Switch back to the demo data to try the example questions.</p>}
           {activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> questions about a connected database need AI mode, which is off on this server, so they will be declined.</p>}
-          {!active && !activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> no AI model is connected, so DataTalk only answers question types like the examples below and says so when it can't.</p>}
+          {!active && !activeSource && schemaInfo?.mode === 'demo' && <p className="mode-note"><strong>Demo mode:</strong> no AI model is connected. DataTalk understands revenue, orders, average order value, quantity sold, customers and products, broken down by month, year, country, channel, status, category, segment, product or customer, and filtered by a year or month (“in March 2025”), country, channel, segment, status or category. If it doesn't understand every part of a question, it says so instead of guessing.</p>}
           {schemaInfo?.mode === 'ai' && <p className="mode-note"><strong>AI mode:</strong> a language model writes the SQL. It may ask which reading of your question you mean, and lists what it assumed under the results. Open "View the SQL that ran" before relying on an answer.</p>}
           {active || activeSource ? suggestions.length > 0 && <>
             <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>{active ? 'Ask about your file' : 'Ask about this database'}</h2></div><span className="suggestion-caption">{active ? 'Built from your column names' : `Built from the ${sourceTables[0].name} table's columns`}</span></div>
@@ -247,11 +268,12 @@ function App() {
           </> : <>
             <div className="suggestion-head"><div><span className="eyebrow">GET STARTED</span><h2>Explore the demo data</h2></div><span className="suggestion-caption">Questions that work in demo mode</span></div>
             <section className="suggestion-grid">{prompts.map((item, i) => <button className="suggestion-card" key={item.text} onClick={() => askDemo(item.text)}><div className={`suggestion-icon si-${i}`}>{item.icon}</div><div className="suggestion-text"><span>{item.tag}</span><strong>{item.text}</strong></div><span className="suggestion-arrow"><Icon name="arrow" size={16}/></span></button>)}</section>
+            <div className="more-prompts"><span className="eyebrow">MORE TO TRY</span>{morePrompts.map(text => <button type="button" className="prompt-chip" key={text} onClick={() => askDemo(text)}>{text}</button>)}</div>
           </>}
-          {error && <div className="notice error-notice" role="alert"><span>!</span>{error}<button aria-label="Dismiss" onClick={() => setError('')}>×</button></div>}
+          {error && <div className="notice error-notice" role="alert" ref={errorRef}><span>!</span>{error}<button aria-label="Dismiss" onClick={() => setError('')}>×</button></div>}
           {result && (result.clarification
             ? <Clarification key={resultVersion} result={result} onChoose={option => askAbout(option, result.sourceId)}/>
-            : <Results key={resultVersion} result={result} onRephrase={rephrase}/>)}
+            : <Results key={resultVersion} result={result} onRephrase={rephrase} sectionRef={resultRef}/>)}
         </>}
         <footer className="page-footer"><span>Read-only · the demo data is synthetic</span><a href={REPO_URL} target="_blank" rel="noreferrer">Source code on GitHub</a></footer>
       </div>

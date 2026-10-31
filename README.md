@@ -4,7 +4,7 @@ DataTalk is an open-source, safety-focused text-to-SQL application. You ask ques
 
 It runs in two modes:
 
-- **Demo mode** (no AI key): answers a small set of question types about the demo shop, phrased like the suggested questions. It is deliberately strict: if it does not fully recognise a question it says so instead of guessing. Uploaded files can be inspected, but questions about them need AI mode.
+- **Demo mode** (no AI key): answers questions about the demo shop that are built from known pieces: a measure (revenue, orders, average order value, quantity sold, customers, products), an optional breakdown (month, year, country, channel, status, category, segment, product, customer) or ranking ("top 3 …", "which … had the most …"), and optional filters (a year or month such as "in March 2025", a country, channel, segment, order status or product category). Small typos are corrected and reported in the explanation. It is deliberately strict: if it does not understand every part of a question it says so, and why, instead of guessing. Uploaded files can be inspected, but questions about them need AI mode.
 - **AI mode** (set `LLM_API_KEY` and `LLM_MODEL`): an OpenAI-compatible model writes the SQL, for the demo data, your uploaded file or a connected database. It replies in a fixed JSON format: the SQL with a one-line explanation and the assumptions it made, or, when your question can be read in more than one way, a clarifying question with options to choose from. Everything the model writes still goes through the same checks.
 
 ## How a question is answered
@@ -24,7 +24,7 @@ AI reply   → strict JSON check → SQL + explanation + assumptions, or a clari
 | Plain-English questions → SQL (AI mode, demo mode) | Implemented |
 | SQL validation: single `SELECT`, exposed tables only, allowlisted functions, row cap | Implemented |
 | Read-only database role with timeouts, enforced by PostgreSQL | Implemented |
-| Results: sortable table, bar chart (when it helps), single-value display, "View the SQL that ran", CSV download of the rows shown | Implemented |
+| Results: sortable table, bar chart or a line chart for values over time (when it helps), single-value display, "View the SQL that ran" with a copy button, CSV download of the rows shown | Implemented |
 | Dataset page: tables, columns, row counts, column meanings, table links, definitions | Implemented |
 | Business context file: column meanings, glossary, verified example queries (`backend/app/business_context.json`) | Implemented; shown on the Dataset page, not yet sent to the AI model |
 | Rate limit, concurrency cap, daily cap on AI model calls (a retry counts) | Implemented |
@@ -126,14 +126,15 @@ With Docker (uses the API container's settings, including your AI key if set):
 docker compose run --rm -v ./backend/eval:/app/eval api python -m app.evaluation
 ```
 
-Measured baseline (2026-10-27, `eval/results/2026-10-27-rules.json`):
+Measured results:
 
 | Mode | Correct answers (50) | Wrong answers shown | Declined when it should (12) |
 | --- | --- | --- | --- |
-| Demo mode (rules) | 12.0% | 0.0% | 100% |
+| Demo mode (rules), 2026-10-27, fixed question types only | 12.0% | 0.0% | 100% |
+| Demo mode (rules), 2026-10-31, measures × breakdowns × filters (`eval/results/2026-10-31-rules.json`) | 72.0% | 0.0% | 100% |
 | AI mode | not measured yet | | |
 
-Demo mode answers few questions by design; the important number is that it shows no wrong answers. "Wrong answers shown" counts results that look like answers but are wrong, which users cannot easily spot. Keep the evaluation questions out of any prompt examples, or the scores stop meaning anything.
+The 2026-10-31 demo grammar (`backend/app/compose.py`) was written with the evaluation questions visible, so 72% overstates how often it understands new phrasings; `backend/tests/test_rules.py` checks separate phrasings. The important number is that demo mode shows no wrong answers. "Wrong answers shown" counts results that look like answers but are wrong, which users cannot easily spot. Keep the evaluation questions out of any prompt examples, or the scores stop meaning anything.
 
 Questions go through the same pipeline as the app, including the one retry. In AI mode a clarifying question counts as declining: right for the ambiguous questions, a miss (but never a wrong answer) for answerable ones, reported as "asked to clarify". The report records every model call with the SQL it wrote and why it was not used, so you can see how often the retry was needed. AI mode has not been measured yet: it needs an API key, and no real-model run has been done.
 

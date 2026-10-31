@@ -47,8 +47,15 @@ def test_top_five_returns_five_rows(client):
 
 
 def test_unanswerable_question_is_declined(client):
-    response = client.post("/api/query", json={"question": "How many customers are from Pakistan?"})
+    response = client.post("/api/query", json={"question": "Which customers live in Lahore?"})
     assert response.status_code == 422 and "never guesses" in response.json()["detail"]
+
+
+def test_demo_mode_answers_composed_questions(client):
+    response = client.post("/api/query", json={"question": "Which 3 countries generated the most revenue in 2025?"})
+    body = response.json()
+    assert response.status_code == 200 and body["row_count"] == 3
+    assert "2025" in body["explanation"] and body["rows"][0]["revenue"] >= body["rows"][1]["revenue"]
 
 
 def test_rate_limit(client, monkeypatch):
